@@ -30,14 +30,14 @@
 namespace fmha {
 
 
-template<typename Cta_tile>
+template<typename Cta_tile, bool Is_causal=false>
 struct Mask {
     using Mma_tile = fmha::Hmma_tile<Cta_tile>;
 
-    template<typename Params, typename BInfo>
-    __device__ Mask(const Params &params, const BInfo &blockInfo, int tidx) {
-
-        actual_seqlen = blockInfo.actual_seqlen;
+    template<typename BInfo>
+    __device__ Mask(const BInfo &blockInfo, int tidx, const int loop_step_idx_ = 0)
+        : actual_seqlen(blockInfo.actual_seqlen - loop_step_idx_ * Cta_tile::N)
+        , loop_step_idx(loop_step_idx_) {
 
         const int warp = tidx / Cta_tile::THREADS_PER_WARP;
         const int lane = tidx % Cta_tile::THREADS_PER_WARP;
@@ -57,25 +57,34 @@ struct Mask {
     inline __device__ bool is_valid(const int mi, const int ni, const int ii, const int jj) const {
 
         // ii and jj iterate over the 2x4 fragment
-        const bool col_valid = (ni * Mma_tile::N_PER_MMA_PER_CTA + col + (jj & 2) * 4 + (jj & 1)) < actual_seqlen;
+        // const int current_col = (Is_causal ? loop_step_idx * Cta_tile::N : 0) + ni * Mma_tile::N_PER_MMA_PER_CTA + col + (jj & 2) * 4 + (jj & 1);
+        const int current_col = ni * Mma_tile::N_PER_MMA_PER_CTA + col + (jj & 2) * 4 + (jj & 1);
+        const int current_row = row_offset + ii * 8;
+        const bool col_valid = current_col < actual_seqlen;
+        // const bool col_valid = (ni * Mma_tile::N_PER_MMA_PER_CTA + col + (jj & 2) * 4 + (jj & 1)) < actual_seqlen;
         //&& (row + mi * Mma_tile::M_PER_MMA_PER_CTA + ii * 8) < actual_seqlen;
-        return col_valid;
+        bool all_valid = Is_causal ? col_valid && (current_col + loop_step_idx * Cta_tile::N <= current_row) : col_valid;
+        // if ((threadIdx.x == 0) && (blockIdx.x == 0) && (blockIdx.y == 0)) {
+        //     printf("current_col=%d, current_row=%d, actual_seqlen=%d, col_valid=%d, all_valid=%d\n", current_col, current_row, actual_seqlen, col_valid, all_valid);
+        // }
+        return Is_causal ? col_valid && (current_col + loop_step_idx * Cta_tile::N <= current_row) : col_valid;
         // return row_valid && col_valid;
     }
 
     //BERT Mask: if upper left is invalid, none are valid
-    inline __device__ bool any_valid(int mi, int ni) const {
-        return is_valid(mi, ni, 0, 0);
+    inline __device__ bool any_valid(const int mi, const int ni) const {
+        return is_valid(mi, ni, 0, 0) || is_valid(mi, ni, 1, 0);
     }
 
-    inline __device__ void load(int it) {
+    inline __device__ void load(const int it) {
         row_offset = it * Cta_tile::M + row;
     }
     int row_offset;
 
     int row;
     int col;
-    int actual_seqlen;
+    const int loop_step_idx;
+    const int actual_seqlen;
 };
 
 }  // namespace fmha

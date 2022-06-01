@@ -25,36 +25,33 @@
  *
  ******************************************************************************/
 
-#include "fmha.h"
-#include "fmha_dgrad_kernel_1xN_reload.h"
+#pragma once
 
-using Kernel_traits = FMHA_kernel_traits<128, 64, 16, 1, 4, 0x08u>;
+#include <fmha.h>
+#include <fmha/utils.h>
+#include <fmha/smem_tile.h>
+#include <fmha/gmem_tile.h>
+#include <fmha/mask.h>
+#include <fmha/softmax.h>
 
-extern "C" __global__ void fmha_dgrad_fp16_128_64_sm80_kernel(Fused_multihead_attention_fprop_params params) {
-    fmha::compute_dv_1xN<Kernel_traits>(params);
-    fmha::compute_dq_dk_1xN<Kernel_traits>(params);
-}
+namespace fmha {
 
-void run_fmha_dgrad_fp16_128_64_sm80(const Fused_multihead_attention_fprop_params &params, cudaStream_t stream) {
+////////////////////////////////////////////////////////////////////////////////////////////////////
 
-    constexpr int smem_size_softmax = Kernel_traits::Cta_tile_p::M * Kernel_traits::Cta_tile_p::WARPS_N * sizeof(float);
-    constexpr int smem_size_q = Kernel_traits::Smem_tile_q::BYTES_PER_TILE;
-    constexpr int smem_size_v = Kernel_traits::Smem_tile_v::BYTES_PER_TILE;
-    constexpr int smem_size_o = Kernel_traits::Smem_tile_o::BYTES_PER_TILE;
+struct Blockmask {
 
-    using Smem_tile_s = fmha::Smem_tile_mma_transposed< Kernel_traits::Cta_tile_p>;
-    constexpr int smem_size_s = Smem_tile_s::BYTES_PER_TILE;
-    static_assert(smem_size_s == 16 * 128 * 2);
-    static_assert(smem_size_o == 16 * 64 * 4 * Kernel_traits::Cta_tile_p::WARPS_N);
-
-    constexpr int smem_size_dv = smem_size_s + 2 * smem_size_q + smem_size_v + smem_size_softmax;
-    constexpr int smem_size_dq_dk = smem_size_s + smem_size_o + smem_size_q + smem_size_v;
-    constexpr int smem_size = std::max(smem_size_dv, smem_size_dq_dk);
-
-    if( smem_size >= 48 * 1024 ) {
-        FMHA_CHECK_CUDA(cudaFuncSetAttribute(
-            fmha_dgrad_fp16_128_64_sm80_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size));
+    template<typename Params>
+    __device__ Blockmask(const Params &params, int loop_step_idx) :
+        blockmask_ptr(params.blockmask + loop_step_idx * params.s / 16) {
     }
-    dim3 grid(params.h, params.b);
-    fmha_dgrad_fp16_128_64_sm80_kernel<<<grid, Kernel_traits::THREADS, smem_size, stream>>>(params);
-}
+
+    __device__ int mask_val(int block_row_idx) const {
+        return blockmask_ptr[block_row_idx];
+    }
+
+    const int *blockmask_ptr;
+};
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+}  // namespace fmha

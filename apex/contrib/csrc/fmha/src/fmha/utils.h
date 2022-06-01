@@ -31,6 +31,8 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+#include <cuda_fp16.h>
+
 extern "C" __device__ uint32_t __nvvm_get_smem_pointer(void *ptr);
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -109,12 +111,16 @@ struct Div_up {
     enum { VALUE = (M + N-1) / N };
 };
 
+constexpr int DivUpConstexpr(int M, int N) { return (M + N - 1) / N; }
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 template< int A, int B >
 struct Max {
     enum { VALUE = A >= B ? A : B };
 };
+
+constexpr int MaxConstexpr(int A, int B) { return A >= B ? A : B; }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -129,6 +135,8 @@ template< int A, int B >
 struct Min {
     enum { VALUE = A <= B ? A : B };
 };
+
+constexpr int MinConstexpr(int A, int B) { return A <= B ? A : B; }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -260,10 +268,13 @@ static inline __device__ uint32_t hmin2(uint32_t a, uint32_t b) {
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-static inline __device__ uint32_t hmul2(uint32_t a, uint32_t b) {
-    uint32_t c;
-    asm volatile("mul.f16x2 %0, %1, %2;\n" : "=r"(c) : "r"(a), "r"(b));
-    return c;
+static inline __device__ uint32_t hmul2(const uint32_t a, const uint32_t b) {
+    // uint32_t c;
+    // asm volatile("mul.f16x2 %0, %1, %2;\n" : "=r"(c) : "r"(a), "r"(b));
+    // return c;
+    __half2 result = __hmul2(reinterpret_cast<const __half2 (&)>(a),
+                             reinterpret_cast<const __half2 (&)>(b));
+    return reinterpret_cast<uint32_t(&)>(result);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -470,6 +481,37 @@ static inline __device__ uint4 hadd8(uint4 a, uint4 b) {
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
+// Converted two half2's into float, then take their dot product.
+// inline __device__ void hfma2_to_float(float &sum, const __half2 a, const __half2 b) {
+static inline __device__ float hfma2_to_float(const __half2 a, const __half2 b) {
+    float2 af = __half22float2(a);
+    float2 bf = __half22float2(b);
+    return af.x * bf.x + af.y * bf.y;
+    // sum += af.x * bf.x + af.y * bf.y;
+    // sum = __fmaf_rn(sum, af.x, bf.x);
+    // sum = __fmaf_rn(sum, af.y, bf.y);
+    // float2 prod = __half22float2(__hmul2(a, b));
+    // sum += prod.x + prod.y;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+// Converted two vectors of 8 half's into float, then take their dot product.
+static inline __device__ float hmulsum8(const uint4 a, const uint4 b) {
+    float sum;
+    sum  = fmha::hfma2_to_float(reinterpret_cast<const __half2&>(a.x),
+                                reinterpret_cast<const __half2&>(b.x));
+    sum += fmha::hfma2_to_float(reinterpret_cast<const __half2&>(a.y),
+                                reinterpret_cast<const __half2&>(b.y));
+    sum += fmha::hfma2_to_float(reinterpret_cast<const __half2&>(a.z),
+                                reinterpret_cast<const __half2&>(b.z));
+    sum += fmha::hfma2_to_float(reinterpret_cast<const __half2&>(a.w),
+                                reinterpret_cast<const __half2&>(b.w));
+    return sum;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 static inline __device__ uint4 fadd4(uint4 a, uint4 b) {
     float4 c;
     c.x = reinterpret_cast<const float&>(a.x) + reinterpret_cast<const float&>(b.x);
@@ -477,6 +519,17 @@ static inline __device__ uint4 fadd4(uint4 a, uint4 b) {
     c.z = reinterpret_cast<const float&>(a.z) + reinterpret_cast<const float&>(b.z);
     c.w = reinterpret_cast<const float&>(a.w) + reinterpret_cast<const float&>(b.w);
     return reinterpret_cast<const uint4&>(c);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+static inline __device__ uint4 fmul4(uint4 a, float b) {
+    float4 c;
+    c.x = reinterpret_cast<const float &>(a.x) * b;
+    c.y = reinterpret_cast<const float &>(a.y) * b;
+    c.z = reinterpret_cast<const float &>(a.z) * b;
+    c.w = reinterpret_cast<const float &>(a.w) * b;
+    return reinterpret_cast<const uint4 &>(c);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -523,6 +576,16 @@ static inline __device__ uint16_t hmul(uint16_t a, uint16_t b) {
     uint16_t d;
     asm volatile("mul.f16 %0, %1, %2;" : "=h"(d) : "h"(a), "h"(b));
     return d;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+static inline __device__ void uint4_to_ushort8(const uint4 a, uint16_t (&b)[8]) {
+    uint32_t *b_tmp = reinterpret_cast<uint32_t *>(&b[0]);
+    b_tmp[0] = a.x;
+    b_tmp[1] = a.y;
+    b_tmp[2] = a.z;
+    b_tmp[3] = a.w;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -955,6 +1018,17 @@ struct MaxOp {
 __device__ inline T operator()(T const & x, T const & y) { return x > y ? x : y; }
 };
 
+template <>
+struct MaxOp<float> {
+// This is slightly faster
+__device__ inline float operator()(float const &x, float const &y) { return max(x, y); }
+};
+
+template <>
+struct MaxOp<__half2> {
+__device__ inline __half2 operator()(__half2 const &x, __half2 const &y) { return __hmax2(x, y); }
+};
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 template<typename T>
@@ -1001,11 +1075,36 @@ __device__ inline void  quad_reduce(float (&dst)[M], float (&src)[M], Operator &
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 template<typename Operator, int M>
+__device__ inline void  quad_reduce(__half2 (&dst)[M], __half2 (&src)[M], Operator &op) {
+    #pragma unroll
+    for(int mi=0; mi < M; mi++){
+        dst[mi] = src[mi];
+        dst[mi] = op(dst[mi], __shfl_down_sync(uint32_t(-1), dst[mi], 2));
+        dst[mi] = op(dst[mi], __shfl_down_sync(uint32_t(-1), dst[mi], 1));
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+template<typename Operator, int M>
 __device__ inline void quad_reduce(float (&dst)[M], float2 (&src)[M], Operator &op) {
     float tmp[M];
     #pragma unroll
     for(int mi=0; mi < M; mi++){
         tmp[mi] = op(src[mi].x, src[mi].y);
+    }
+    quad_reduce(dst, tmp, op);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+template<typename Operator, int M>
+__device__ inline void quad_reduce(__half2 (&dst)[M], float2 (&src)[M], Operator &op) {
+    __half2 tmp[M];
+    #pragma unroll
+    for(int mi=0; mi < M; mi++){
+        tmp[mi] = op(reinterpret_cast<const __half2 &>(src[mi].x),
+                     reinterpret_cast<const __half2 &>(src[mi].y));
     }
     quad_reduce(dst, tmp, op);
 }
@@ -1024,11 +1123,35 @@ __device__ inline void quad_allreduce(float (&dst)[M], float (&src)[M], Operator
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 template<typename Operator, int M>
+__device__ inline void quad_allreduce(__half2 (&dst)[M], __half2 (&src)[M], Operator &op) {
+    #pragma unroll
+    for(int mi=0; mi < M; mi++){
+        dst[mi] = src[mi];
+        dst[mi] = Allreduce<4>::run(dst[mi], op);
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+template<typename Operator, int M>
 __device__ inline void quad_allreduce(float (&dst)[M], float2 (&src)[M], Operator &op) {
     float tmp[M];
     #pragma unroll
     for(int mi=0; mi < M; mi++){
         tmp[mi] = op(src[mi].x, src[mi].y);
+    }
+    quad_allreduce(dst, tmp, op);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+template<typename Operator, int M>
+__device__ inline void quad_allreduce(__half2 (&dst)[M], float2 (&src)[M], Operator &op) {
+    __half2 tmp[M];
+    #pragma unroll
+    for(int mi=0; mi < M; mi++){
+        tmp[mi] = op(reinterpret_cast<const __half2 &>(src[mi].x),
+                     reinterpret_cast<const __half2 &>(src[mi].y));
     }
     quad_allreduce(dst, tmp, op);
 }

@@ -27,7 +27,7 @@
 
 #pragma once
 
-#include <multihead_attn/philox.cuh>
+#include <philox.cuh>
 
 #include <fmha.h>
 #include <fmha/utils.h>
@@ -58,8 +58,8 @@ struct BlockInfoPadded {
         tidx_global = (bidb * params.h + bidh) * THREADS_PER_CTA + tidx;
     }
 
-    __device__ bool stop_early() const {
-        return actual_seqlen == 0;
+    __device__ bool stop_early(const int start_col = 0) const {
+        return actual_seqlen <= start_col;
     }
 
     int actual_seqlen;

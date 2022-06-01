@@ -27,12 +27,15 @@
 
 #pragma once
 
+#include <cmath>
+#include <cuda_fp16.h>
+
 namespace fmha {
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 struct Sum_ {
-    enum { IS_SUM = 1 };
+    static constexpr bool IS_SUM = true;
     static inline __device__ float apply(float x, float y) {
         return x + y;
     }
@@ -41,7 +44,7 @@ struct Sum_ {
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 struct Max_ {
-    enum { IS_SUM = 0 };
+    static constexpr bool IS_SUM = false;
     static inline __device__ float apply(float x, float y) {
         return x > y ? x : y;
     }
@@ -55,9 +58,34 @@ inline __device__ float apply_exp_(float x, float max) {
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-template<int COLS> struct ReadType {};
-template<> struct ReadType<4> { using T = float;};
-template<> struct ReadType<8> { using T = float2;};
+inline __device__ __half2 apply_exp_(__half2 x, __half2 max) {
+    return h2exp(__hsub2(x, max));
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+inline __device__ float apply_exp2_(float x, float max) {
+    return exp2f(x - max);
+    // With fast-math, this produces the same PTX instruction as the assembly below
+    // float diff = x - max;
+    // float res;
+    // asm ("ex2.approx.ftz.f32 %0, %1;\n\t" : "=f"(res) : "f"(diff));
+    // return res;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+inline __device__ __half2 apply_exp2_(__half2 x, __half2 max) {
+    return h2exp2(__hsub2(x, max));
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+template<int COLS, bool half> struct ReadType {};
+template<> struct ReadType<4, false> { using T = float;};
+template<> struct ReadType<8, false> { using T = float2;};
+template<> struct ReadType<4, true> { using T = __half2;};
+template<> struct ReadType<8, true> { using T = float2;};
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -69,11 +97,11 @@ struct Smem_tile_reduce {
     using Mma_tile = fmha::Hmma_tile<Cta_tile>;
 
     // The number of MMAs in M/N dimensions.
-    enum { MMAS_M = Mma_tile::MMAS_M };
-    enum { MMAS_N = Mma_tile::MMAS_N };
+    static constexpr int MMAS_M = Mma_tile::MMAS_M;
+    static constexpr int MMAS_N = Mma_tile::MMAS_N;
 
-    enum { WARPS_M = Cta_tile::WARPS_M };
-    enum { WARPS_N = Cta_tile::WARPS_N };
+    static constexpr int WARPS_M = Cta_tile::WARPS_M;
+    static constexpr int WARPS_N = Cta_tile::WARPS_N;
 
 
     static constexpr int ROWS = WARPS_M * MMAS_M * 16;
@@ -84,12 +112,14 @@ struct Smem_tile_reduce {
     static constexpr int ELTS_PER_TILE = ROWS * COLS;
 
     static constexpr int THREADS_PER_GROUP = Kernel_traits::Gmem_tile_o::THREADS_PER_ROW;
-    static_assert(THREADS_PER_GROUP == 16); // DEBUG
+    // TD [2022-05-02]: No longer true if head_dim != 64
+    // static_assert(THREADS_PER_GROUP == 16); // DEBUG
     static constexpr int ROWS_PER_WARP = 32 / THREADS_PER_GROUP;
     static constexpr int LOOPS = Kernel_traits::Gmem_tile_o::LOOPS;
     static_assert(LOOPS == 1);
 
-    using read_t = typename ReadType<COLS>::T;
+    using read_t = typename ReadType<COLS, /*half=*/false>::T;
+    using read_half_t = typename ReadType<COLS, /*half=*/true>::T;
 
     __device__ inline Smem_tile_reduce(float *smem_, const int tidx) {
 
@@ -107,6 +137,7 @@ struct Smem_tile_reduce {
         const int col = warp_n ^ (qp / ROWS_PER_XOR_PATTERN);
         smem_write_ = &smem_[warp_m * 16 * MMAS_M * WARPS_N + qp * WARPS_N + col];
         smem_read_ = &reinterpret_cast<read_t *>(smem_)[warp_m * 16 * MMAS_M * 4 + qp * 4 + qid_];
+        smem_read_row_ = &reinterpret_cast<read_t *>(smem_)[warp_m * 16 * MMAS_M * 4 + qid_];
 
     }
 
@@ -121,6 +152,17 @@ struct Smem_tile_reduce {
         }
     }
 
+    __device__ inline void store(__half2 (&frag)[MMAS_M]) {
+        __half2 *smem_write_half_ = reinterpret_cast<__half2 *>(smem_write_);
+        if( qid_ == 0 ) {
+            #pragma unroll
+            for( int mi = 0; mi < MMAS_M; mi++ ) {
+                int offset = mi * 16 * WARPS_N;
+                smem_write_half_[offset + 0 * 8 * WARPS_N] = frag[mi];
+            }
+        }
+    }
+
     __device__ inline void load(read_t (&frag)[2 * MMAS_M]) {
         #pragma unroll
         for( int mi = 0; mi < MMAS_M; mi++ ) {
@@ -130,9 +172,27 @@ struct Smem_tile_reduce {
         }
     }
 
+    __device__ inline void load(read_half_t (&frag)[MMAS_M]) {
+        read_half_t *smem_read_half_ = reinterpret_cast<read_half_t *>(smem_read_);
+        #pragma unroll
+        for( int mi = 0; mi < MMAS_M; mi++ ) {
+            int offset = mi * 16 * 4;
+            frag[mi] = smem_read_half_[offset + 0 * 8 * 4];
+        }
+    }
+
+    __device__ inline void load_row(read_t (&frag)[MMAS_M], int row) {
+        #pragma unroll
+        for( int mi = 0; mi < MMAS_M; mi++ ) {
+            int offset = mi * 16 * 4;
+            frag[mi] = smem_read_row_[offset + 0 * 8 * 4 + row * 4];
+        }
+    }
+
     int qid_;
     float *smem_write_;
     read_t *smem_read_;
+    read_t *smem_read_row_;
 
 };
 
@@ -144,21 +204,21 @@ struct Softmax_base {
     using Mma_tile = fmha::Hmma_tile<Cta_tile>;
 
     // The number of MMAs in M/N dimensions.
-    enum { MMAS_M = Mma_tile::MMAS_M };
-    enum { MMAS_N = Mma_tile::MMAS_N };
+    static constexpr int MMAS_M = Mma_tile::MMAS_M;
+    static constexpr int MMAS_N = Mma_tile::MMAS_N;
 
     // The number of groups of warp such that we have at most 4 warps writing consecutive elements.
-    enum { GROUPS = fmha::Div_up<Cta_tile::WARPS_N, 4>::VALUE };
+    static constexpr int GROUPS = fmha::DivUpConstexpr(Cta_tile::WARPS_N, 4);
     // The number of elements that we are going to store per row.
-    enum { ELEMENTS_PER_ROW = Cta_tile::WARPS_N / GROUPS };
+    static constexpr int ELEMENTS_PER_ROW = Cta_tile::WARPS_N / GROUPS;
     // The number of rows.
-    enum { ROWS = Cta_tile::M * GROUPS };
+    static constexpr int ROWS = Cta_tile::M * GROUPS;
     // The total number of elements.
-    enum { ELEMENTS = ROWS * ELEMENTS_PER_ROW };
+    static constexpr int ELEMENTS = ROWS * ELEMENTS_PER_ROW;
 
     // Ctor.
     template<typename Params>
-    inline __device__ Softmax_base(const Params &params, void *smem, int bidb, int tidx)
+    inline __device__ Softmax_base(const Params &params, void *smem, int tidx)
         :  // packed_mask_ptr_(reinterpret_cast<const char*>(params.packed_mask_ptr)),
           smem_(reinterpret_cast<float *>(smem)), tidx_(tidx) {
 
@@ -188,7 +248,7 @@ struct Softmax_base {
         smem_read_ = &smem_[warp_m * Mma_tile::M_PER_MMA + lane / 4];
     }
 
-    template<typename Mask>
+    template<bool zero=false, typename Mask>
     inline __device__ void apply_mask(const Mask &mask) {
         #pragma unroll
         for( int mi = 0; mi < MMAS_M; ++mi ) {
@@ -199,7 +259,7 @@ struct Softmax_base {
                     #pragma unroll
                     for( int jj = 0; jj < 4; ++jj ) {
                         if( !mask.is_valid(mi, ni, ii, jj) ) {
-                            elt_[2 * mi + ii][4 * ni + jj] = -INFINITY;
+                            elt_[2 * mi + ii][4 * ni + jj] = zero ? 0.f : -INFINITY;
                         }
                     }
                 }
@@ -208,12 +268,223 @@ struct Softmax_base {
     }
 
     // Apply the exp to all the elements.
+    template <bool max_in_base2=false, bool elt_in_base2=false>
     inline __device__ void apply_exp(const float (&max)[MMAS_M * 2]) {
         #pragma unroll
         for( int mi = 0; mi < MMAS_M * 2; ++mi ) {
+            // Instead of computing exp(x - max), we compute exp2(x * log_2(e) -
+            // max * log_2(e)) This allows the compiler to use the ffma
+            // instruction instead of fadd and fmul separately.
+            constexpr float kLog2e = M_LOG2E;
+            const float max_base2 = max_in_base2 ? max[mi] : max[mi] * kLog2e;
             #pragma unroll
             for( int ni = 0; ni < MMAS_N * 4; ++ni ) {
-                elt_[mi][ni] = apply_exp_(elt_[mi][ni], max[mi]);
+                // elt_[mi][ni] = apply_exp_(elt_[mi][ni], max[mi]);
+                elt_[mi][ni] = apply_exp2_(elt_in_base2 ? elt_[mi][ni] : elt_[mi][ni] * kLog2e,
+                                           max_base2);
+            }
+        }
+    }
+
+    // Apply the exp to all the elements.
+    template <bool scale_max=true>
+    inline __device__ void scale_apply_exp(const float (&max)[MMAS_M * 2], const float scale_) {
+        const float max_scale = scale_max ? scale_ * M_LOG2E : M_LOG2E;
+        const float scale = scale_ * M_LOG2E;
+        #pragma unroll
+        for( int mi = 0; mi < MMAS_M * 2; ++mi ) {
+            // Instead of computing exp(x - max), we compute exp2(x * log_2(e) -
+            // max * log_2(e)) This allows the compiler to use the ffma
+            // instruction instead of fadd and fmul separately.
+            const float max_scaled = max[mi] * max_scale;
+            #pragma unroll
+            for( int ni = 0; ni < MMAS_N * 4; ++ni ) {
+                elt_[mi][ni] = apply_exp2_(elt_[mi][ni] * scale, max_scaled);
+            }
+        }
+    }
+
+    // Apply the exp to all the elements.
+    inline __device__ void apply_exp(const __half2 (&max)[MMAS_M]) {
+        #pragma unroll
+        for (int mi = 0; mi < MMAS_M; ++mi) {
+            // Instead of computing exp(x - max), we compute exp2(x * log_2(e) -
+            // max * log_2(e)) This allows the compiler to use the ffma
+            // instruction instead of fadd and fmul separately.
+            constexpr float kLog2e = M_LOG2E;
+            const float2 max_f = __half22float2(max[mi]);
+            const float max0_log2e = max_f.x * kLog2e, max1_log2e = max_f.y * kLog2e;
+            #pragma unroll
+            for (int ni = 0; ni < MMAS_N * 4; ++ni) {
+                float2 elt = __half22float2(elt_half_[mi][ni]);
+                elt_[mi * 2 + 0][ni] = apply_exp2_(elt.x * kLog2e, max0_log2e);
+                elt_[mi * 2 + 1][ni] = apply_exp2_(elt.y * kLog2e, max1_log2e);
+                // __half2 out = apply_exp_(elt_half_[mi][ni], max[mi]);
+                // float2 outf = __half22float2(out);
+                // elt_[mi * 2 + 0][ni] = outf.x;
+                // elt_[mi * 2 + 1][ni] = outf.y;
+            }
+        }
+    }
+
+    // Apply the exp to all the elements.
+    template <bool max_in_base2=false>
+    inline __device__ void apply_exp_col(const float (&max)[MMAS_N * 4]) {
+        #pragma unroll
+        for( int ni = 0; ni < MMAS_N * 4; ++ni ) {
+            constexpr float kLog2e = M_LOG2E;
+            const float max_base2 = max_in_base2 ? max[ni] : max[ni] * kLog2e;
+            #pragma unroll
+            for( int mi = 0; mi < MMAS_M * 2; ++mi ) {
+                elt_[mi][ni] = apply_exp2_(elt_[mi][ni] * kLog2e, max_base2);
+            }
+        }
+    }
+    // inline __device__ void apply_exp_col(const float (&max)[MMAS_N]) {
+    //     constexpr float kLog2e = M_LOG2E;
+    //     #pragma unroll
+    //     for( int ni = 0; ni < MMAS_N * 4; ++ni ) {
+    //         float max_base2 = max_in_base2 ? max[ni / 4] : max[ni / 4] * kLog2e;
+    //         max_base2 = __shfl_sync(0xffffffff, max_base2, (ni % 4) * 8 + threadIdx.x % 8);
+    //         #pragma unroll
+    //         for( int mi = 0; mi < MMAS_M * 2; ++mi ) {
+    //             elt_[mi][ni] = apply_exp2_(elt_[mi][ni] * kLog2e, max_base2);
+    //         }
+    //     }
+    // }
+
+    template <bool encode_dropout_in_sign_bit=false>
+    inline __device__ void apply_dropout(Philox &ph, uint32_t p_dropout_in_uint) {
+        // We encode the dropout pattern in the sign bit of the non-negative
+        // softmax to distinguish from pre-existing zeros
+        auto encode_dropout = [](bool keep, float val) {
+            return keep ? val : (encode_dropout_in_sign_bit ? -val : float(0));
+        };
+        #pragma unroll
+        for( int mi = 0; mi < MMAS_M * 2; mi++ ) {
+            #pragma unroll
+            for( int ni = 0; ni < MMAS_N; ni++ ) {
+                uint4 tmp = ph();
+                // if ((threadIdx.x == 0) && (blockIdx.x == 0) && (blockIdx.y == 0)) {
+                //     printf("ni = %d, ph  Philox: %u, %u, %u, %u\n", ni, tmp.x, tmp.y, tmp.z, tmp.w);
+                // }
+                elt_[mi][4 * ni + 0] =
+                    encode_dropout(tmp.x <= p_dropout_in_uint, elt_[mi][4 * ni + 0]);
+                elt_[mi][4 * ni + 1] =
+                    encode_dropout(tmp.y <= p_dropout_in_uint, elt_[mi][4 * ni + 1]);
+                elt_[mi][4 * ni + 2] =
+                    encode_dropout(tmp.z <= p_dropout_in_uint, elt_[mi][4 * ni + 2]);
+                elt_[mi][4 * ni + 3] =
+                    encode_dropout(tmp.w <= p_dropout_in_uint, elt_[mi][4 * ni + 3]);
+            }
+        }
+    }
+
+    template <bool encode_dropout_in_sign_bit=false>
+    inline __device__ void apply_dropout(Philox &ph0, Philox &ph1, uint32_t p_dropout_in_uint) {
+        // We encode the dropout pattern in the sign bit of the non-negative
+        // softmax to distinguish from pre-existing zeros
+        auto encode_dropout = [](bool keep, float val) {
+            return keep ? val : (encode_dropout_in_sign_bit ? -val : float(0));
+        };
+        #pragma unroll
+        for( int mi = 0; mi < MMAS_M * 2; mi++ ) {
+            static_assert(MMAS_N % 2 == 0);
+            #pragma unroll
+            for( int ni = 0; ni < MMAS_N; ni += 2 ) {
+                uint4 tmp = ph0();
+                // if ((threadIdx.x == 0) && (blockIdx.x == 0) && (blockIdx.y == 0)) {
+                //     printf("ni = %d, ph0, Philox: %u, %u, %u, %u\n", ni, tmp.x, tmp.y, tmp.z, tmp.w);
+                // }
+                elt_[mi][4 * ni + 0] =
+                    encode_dropout(tmp.x <= p_dropout_in_uint, elt_[mi][4 * ni + 0]);
+                elt_[mi][4 * ni + 1] =
+                    encode_dropout(tmp.y <= p_dropout_in_uint, elt_[mi][4 * ni + 1]);
+                elt_[mi][4 * ni + 2] =
+                    encode_dropout(tmp.z <= p_dropout_in_uint, elt_[mi][4 * ni + 2]);
+                elt_[mi][4 * ni + 3] =
+                    encode_dropout(tmp.w <= p_dropout_in_uint, elt_[mi][4 * ni + 3]);
+                tmp = ph1();
+                // if ((threadIdx.x == 0) && (blockIdx.x == 0) && (blockIdx.y == 0)) {
+                //     printf("ni = %d, ph1, Philox: %u, %u, %u, %u\n", ni + 1, tmp.x, tmp.y, tmp.z, tmp.w);
+                // }
+                elt_[mi][4 * (ni + 1) + 0] =
+                    encode_dropout(tmp.x <= p_dropout_in_uint, elt_[mi][4 * (ni + 1) + 0]);
+                elt_[mi][4 * (ni + 1) + 1] =
+                    encode_dropout(tmp.y <= p_dropout_in_uint, elt_[mi][4 * (ni + 1) + 1]);
+                elt_[mi][4 * (ni + 1) + 2] =
+                    encode_dropout(tmp.z <= p_dropout_in_uint, elt_[mi][4 * (ni + 1) + 2]);
+                elt_[mi][4 * (ni + 1) + 3] =
+                    encode_dropout(tmp.w <= p_dropout_in_uint, elt_[mi][4 * (ni + 1) + 3]);
+            }
+        }
+    }
+
+    template <bool encode_dropout_in_sign_bit=false>
+    inline __device__ void apply_dropout_16bits(Philox &ph, uint16_t p_dropout_in_uint16_t) {
+        // We encode the dropout pattern in the sign bit of the non-negative
+        // softmax to distinguish from pre-existing zeros
+        auto encode_dropout = [](bool keep, float val) {
+            return keep ? val : (encode_dropout_in_sign_bit ? -val : float(0));
+        };
+        #pragma unroll
+        for( int mi = 0; mi < MMAS_M; mi++ ) {
+            #pragma unroll
+            for( int ni = 0; ni < MMAS_N; ni++ ) {
+                uint16_t tmp[8];
+                fmha::uint4_to_ushort8(ph(), tmp);
+                // if ((threadIdx.x == 0) && (blockIdx.x == 0) && (blockIdx.y == 0)) {
+                //     printf("ni = %d, ph  Philox: %u, %u, %u, %u\n", ni, tmp.x, tmp.y, tmp.z, tmp.w);
+                // }
+                #pragma unroll
+                for (int ii = 0; ii < 2; ++ii) {
+                    #pragma unroll
+                    for (int jj = 0; jj < 4; ++jj) {
+                        elt_[mi * 2 + ii][4 * ni + jj] =
+                            encode_dropout(tmp[ii * 4 + jj] <= p_dropout_in_uint16_t, elt_[mi * 2 + ii][4 * ni + jj]);
+                    }
+                }
+            }
+        }
+    }
+
+    template <bool encode_dropout_in_sign_bit=false>
+    inline __device__ void apply_dropout_16bits(Philox &ph0, Philox &ph1, uint16_t p_dropout_in_uint16_t) {
+        // We encode the dropout pattern in the sign bit of the non-negative
+        // softmax to distinguish from pre-existing zeros
+        auto encode_dropout = [](bool keep, float val) {
+            return keep ? val : (encode_dropout_in_sign_bit ? -val : float(0));
+        };
+        #pragma unroll
+        for( int mi = 0; mi < MMAS_M; mi++ ) {
+            static_assert(MMAS_N % 2 == 0);
+            #pragma unroll
+            for( int ni = 0; ni < MMAS_N; ni += 2 ) {
+                uint16_t tmp[8];
+                fmha::uint4_to_ushort8(ph0(), tmp);
+                // if ((threadIdx.x == 0) && (blockIdx.x == 0) && (blockIdx.y == 0)) {
+                //     printf("ni = %d, ph  Philox: %u, %u, %u, %u\n", ni, tmp.x, tmp.y, tmp.z, tmp.w);
+                // }
+                #pragma unroll
+                for (int ii = 0; ii < 2; ++ii) {
+                    #pragma unroll
+                    for (int jj = 0; jj < 4; ++jj) {
+                        elt_[mi * 2 + ii][4 * ni + jj] =
+                            encode_dropout(tmp[ii * 4 + jj] <= p_dropout_in_uint16_t, elt_[mi * 2 + ii][4 * ni + jj]);
+                    }
+                }
+                fmha::uint4_to_ushort8(ph1(), tmp);
+                // if ((threadIdx.x == 0) && (blockIdx.x == 0) && (blockIdx.y == 0)) {
+                //     printf("ni = %d, ph  Philox: %u, %u, %u, %u\n", ni, tmp.x, tmp.y, tmp.z, tmp.w);
+                // }
+                #pragma unroll
+                for (int ii = 0; ii < 2; ++ii) {
+                    #pragma unroll
+                    for (int jj = 0; jj < 4; ++jj) {
+                        elt_[mi * 2 + ii][4 * (ni + 1) + jj] =
+                            encode_dropout(tmp[ii * 4 + jj] <= p_dropout_in_uint16_t, elt_[mi * 2 + ii][4 * (ni + 1) + jj]);
+                    }
+                }
             }
         }
     }
@@ -237,6 +508,17 @@ struct Softmax_base {
         }
     }
 
+    // Subtract all elements by dp_sum
+    inline __device__ void subtract_dp_sum(const float (&dp_sum)[MMAS_M * 2]) {
+        #pragma unroll
+        for( int mi = 0; mi < MMAS_M * 2; ++mi ) {
+            #pragma unroll
+            for( int ni = 0; ni < MMAS_N * 4; ++ni ) {
+                elt_[mi][ni] -= dp_sum[mi];
+            }
+        }
+    }
+
     // The pointer to the mask.
     const char *packed_mask_ptr_;
     // Shared memory for the CTA-wide reduction.
@@ -245,6 +527,7 @@ struct Softmax_base {
     int tidx_;
     // The elements.
     float elt_[MMAS_M * 2][MMAS_N * 4];
+    __half2 elt_half_[MMAS_M][MMAS_N * 4];
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -259,11 +542,11 @@ struct Softmax : public Softmax_base<Cta_tile, Kernel_traits> {
 
     static_assert(Fragment_a::NUM_REGS == 4);
 
-    enum { WARPS_M = Cta_tile::WARPS_M };
-    enum { WARPS_N = Cta_tile::WARPS_N };
+    static constexpr int WARPS_M = Cta_tile::WARPS_M;
+    static constexpr int WARPS_N = Cta_tile::WARPS_N;
     // The MMAs.
-    enum { MMAS_M = Base::MMAS_M };
-    enum { MMAS_N = Base::MMAS_N };
+    static constexpr int MMAS_M = Base::MMAS_M;
+    static constexpr int MMAS_N = Base::MMAS_N;
 
     // The accumulators.
     using Accumulator = fmha::Fragment_accumulator;
@@ -276,8 +559,8 @@ struct Softmax : public Softmax_base<Cta_tile, Kernel_traits> {
     static_assert(Smem_tile_red::ELTS_PER_TILE == Cta_tile::M * WARPS_N);
     // Ctor.
     template<typename Params>
-    inline __device__ Softmax(const Params &params, void *smem, int bidb, int tidx)
-        : Base(params, smem, bidb, tidx)
+    inline __device__ Softmax(const Params &params, void *smem, int tidx)
+        : Base(params, smem, tidx)
         , params_scale_bmm1_(params.scale_bmm1) 
         , smem_sum_(static_cast<float*>(smem), tidx)
         , smem_max_(static_cast<float*>(smem) + Smem_tile_red::ELTS_PER_TILE, tidx) {
@@ -333,6 +616,7 @@ struct Softmax : public Softmax_base<Cta_tile, Kernel_traits> {
             }
         }
     }
+
     // Scale FP32 fragments
     inline __device__ void unpack_noscale(const Accumulator (&acc)[MMAS_M][MMAS_N]) {
 
@@ -354,28 +638,88 @@ struct Softmax : public Softmax_base<Cta_tile, Kernel_traits> {
         }
     }
 
+    // Scale FP32 fragments
+    template <typename Mask>
+    inline __device__ void unpack_noscale_half_and_apply_mask(const Accumulator (&acc)[MMAS_M][MMAS_N],
+                                                              const Mask &mask) {
 
+        #pragma unroll
+        for( int mi = 0; mi < MMAS_M; ++mi ) {
+            #pragma unroll
+            for( int ni = 0; ni < MMAS_N; ++ni ) {
+                float tmp[2][4];
+                // 1st row - 4 elements per row.
+                tmp[0][0] = mask.is_valid(mi, ni, 0, 0) ? acc[mi][ni].elt(0) : -INFINITY;
+                tmp[0][1] = mask.is_valid(mi, ni, 0, 1) ? acc[mi][ni].elt(1) : -INFINITY;
+                tmp[0][2] = mask.is_valid(mi, ni, 0, 2) ? acc[mi][ni].elt(4) : -INFINITY;
+                tmp[0][3] = mask.is_valid(mi, ni, 0, 3) ? acc[mi][ni].elt(5) : -INFINITY;
+                // 2nd row - 4 elements per row.
+                tmp[1][0] = mask.is_valid(mi, ni, 1, 0) ? acc[mi][ni].elt(2) : -INFINITY;
+                tmp[1][1] = mask.is_valid(mi, ni, 1, 1) ? acc[mi][ni].elt(3) : -INFINITY;
+                tmp[1][2] = mask.is_valid(mi, ni, 1, 2) ? acc[mi][ni].elt(6) : -INFINITY;
+                tmp[1][3] = mask.is_valid(mi, ni, 1, 3) ? acc[mi][ni].elt(7) : -INFINITY;
+                this->elt_half_[mi][4 * ni + 0] = __floats2half2_rn(tmp[0][0], tmp[1][0]);
+                this->elt_half_[mi][4 * ni + 1] = __floats2half2_rn(tmp[0][1], tmp[1][1]);
+                this->elt_half_[mi][4 * ni + 2] = __floats2half2_rn(tmp[0][2], tmp[1][2]);
+                this->elt_half_[mi][4 * ni + 3] = __floats2half2_rn(tmp[0][3], tmp[1][3]);
+            }
+        }
+    }
 
-    template<typename Operator>
-    __device__ inline void reduce_(float (&frag)[2 * MMAS_M], Operator &op, Smem_tile_red & smem_red) {
+    template<bool zero_init=true, typename Operator>
+    __device__ inline void thread_reduce_(float (&frag)[2 * MMAS_M], Operator &op) {
+        #pragma unroll
         for( int mi = 0; mi < 2 * MMAS_M; mi++ ) {
-            frag[mi] = this->elt_[mi][0];
+            frag[mi] = zero_init ? this->elt_[mi][0] : op(frag[mi], this->elt_[mi][0]);
+            #pragma unroll
             for( int ni = 1; ni < 4 * MMAS_N; ni++ ) {
                 frag[mi] = op(frag[mi], this->elt_[mi][ni]);
             }
         }
-        quad_reduce(frag, frag, op);
+    }
 
+    template<typename Operator>
+    __device__ inline void thread_reduce_(__half2 (&frag)[MMAS_M], Operator &op) {
+        #pragma unroll
+        for( int mi = 0; mi < MMAS_M; mi++ ) {
+            frag[mi] = this->elt_half_[mi][0];
+            #pragma unroll
+            for( int ni = 1; ni < 4 * MMAS_N; ni++ ) {
+                frag[mi] = op(frag[mi], this->elt_half_[mi][ni]);
+            }
+        }
+    }
+
+    template<bool zero_init=true, typename Operator>
+    __device__ inline void reduce_(float (&frag)[2 * MMAS_M], Operator &op, Smem_tile_red & smem_red) {
+        thread_reduce_<zero_init>(frag, op);
+        quad_reduce(frag, frag, op);
         smem_red.store(frag);
         __syncthreads();
         typename Smem_tile_red::read_t tmp[2 * MMAS_M];
         smem_red.load(tmp);
-
         quad_allreduce(frag, tmp, op);
     }
 
+    template<typename Operator>
+    __device__ inline void reduce_(__half2 (&frag)[MMAS_M], Operator &op, Smem_tile_red & smem_red) {
+        thread_reduce_(frag, op);
+        quad_reduce(frag, frag, op);
+        smem_red.store(frag);
+        __syncthreads();
+        typename Smem_tile_red::read_half_t tmp[MMAS_M];
+        smem_red.load(tmp);
+        quad_allreduce(frag, tmp, op);
+    }
+
+    template<bool zero_init=true>
     __device__ inline void reduce_max(float (&frag)[2 * MMAS_M]){ 
         MaxOp<float> max;
+        reduce_<zero_init>(frag, max, smem_max_);
+    }
+
+    __device__ inline void reduce_max(__half2 (&frag)[MMAS_M]){
+        MaxOp<__half2> max;
         reduce_(frag, max, smem_max_);
     }
 
@@ -384,6 +728,39 @@ struct Softmax : public Softmax_base<Cta_tile, Kernel_traits> {
         reduce_(frag, sum, smem_sum_);
     }
 
+    template<bool zero_init=true>
+    __device__ inline void reduce_sum_before_sync_(float (&frag)[2 * MMAS_M]){
+        SumOp<float> sum;
+        thread_reduce_<zero_init>(frag, sum);
+        quad_reduce(frag, frag, sum);
+        smem_sum_.store(frag);
+    }
+
+    template<int NROWS, typename Operator>
+    __device__ inline void reduce_after_sync_(float (&frag)[NROWS][MMAS_M],
+                                              const int (&rows)[NROWS],
+                                              Operator &op, Smem_tile_red & smem_red) {
+        #pragma unroll
+        for (int ii = 0; ii < NROWS; ii++) {
+            typename Smem_tile_red::read_t tmp[MMAS_M];
+            smem_red.load_row(tmp, rows[ii]);
+            quad_allreduce(frag[ii], tmp, op);
+        }
+    }
+
+    template<int NROWS>
+    __device__ inline void reduce_sum_after_sync_(float (&frag)[NROWS][MMAS_M],
+                                                  const int (&rows)[NROWS]){
+        SumOp<float> sum;
+        reduce_after_sync_(frag, rows, sum, smem_sum_);
+    }
+
+    template<int NROWS>
+    __device__ inline void reduce_max_after_sync_(float (&frag)[NROWS][MMAS_M],
+                                                  const int (&rows)[NROWS]){
+        MaxOp<float> max;
+        reduce_after_sync_(frag, rows, max, smem_max_);
+    }
 
     const uint32_t params_scale_bmm1_;
     Smem_tile_red smem_max_;
