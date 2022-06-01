@@ -1,6 +1,6 @@
 /******************************************************************************
  * Copyright (c) 2011-2021, NVIDIA CORPORATION.  All rights reserved.
- * 
+ *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
  *     * Redistributions of source code must retain the above copyright
@@ -11,7 +11,7 @@
  *     * Neither the name of the NVIDIA CORPORATION nor the
  *       names of its contributors may be used to endorse or promote products
  *       derived from this software without specific prior written permission.
- * 
+ *
  * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
  * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
  * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
@@ -27,6 +27,7 @@
 
 #pragma once
 
+#include "utils.h"
 #include <fmha/utils.h>
 #include <fmha/gemm.h>
 
@@ -34,24 +35,24 @@ namespace fmha {
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-template< 
+template<
     // The description of the tile computed by this CTA.
-    typename Cta_tile, 
+    typename Cta_tile,
     // The number of rows in the 2D shared memory buffer.
-    int M_, 
+    int M_,
     // The number of cols.
-    int N_, 
+    int N_,
     // The size in bits of each element.
-    int BITS_PER_ELEMENT_, 
+    int BITS_PER_ELEMENT_,
     // The number of bytes per STS.
     int BYTES_PER_STS_ = 16,
     // The number of buffers. (Used in multistage and double buffer cases.)
     int BUFFERS_PER_TILE_ = 1,
     // Do we enable the fast path for LDS.128 and friends.
-    int ENABLE_LDS_FAST_PATH_ = 0, 
-    // The number of rows that are used for the XOR swizzling to allow fast STS/LDS. 
+    int ENABLE_LDS_FAST_PATH_ = 0,
+    // The number of rows that are used for the XOR swizzling to allow fast STS/LDS.
     int ROWS_PER_XOR_PATTERN_ = 8,
-    // The number of cols that are used for the XOR swizzling to allow fast STS/LDS. 
+    // The number of cols that are used for the XOR swizzling to allow fast STS/LDS.
     int COLS_PER_XOR_PATTERN_ = 1,
     // Use or not predicates
     bool USE_PREDICATES_ = true
@@ -65,7 +66,7 @@ struct Smem_tile_without_skews {
     // The number of elements per STS.
     enum { ELEMENTS_PER_STS = BYTES_PER_STS * 8 / BITS_PER_ELEMENT };
     // To support arbitrary N, we pad some values to a power-of-2.
-    enum { N_WITH_PADDING = Next_power_of_two<N_>::VALUE }; 
+    enum { N_WITH_PADDING = Next_power_of_two<N_>::VALUE };
     // The number of bytes per row without packing of rows.
     enum { BYTES_PER_ROW_BEFORE_PACKING = N_WITH_PADDING * BITS_PER_ELEMENT / 8 };
     // The number of bytes per row -- we want at least 128B per row.
@@ -93,7 +94,7 @@ struct Smem_tile_without_skews {
 
     // The size of one buffer in bytes in shared memory.
     enum { BYTES_PER_BUFFER = STS * BYTES_PER_STS * Cta_tile::THREADS_PER_CTA };
-    // The number of buffers. 
+    // The number of buffers.
     enum { BUFFERS_PER_TILE = BUFFERS_PER_TILE_ };
     // The size in bytes of total buffers.
     enum { BYTES_PER_TILE = BYTES_PER_BUFFER * BUFFERS_PER_TILE };
@@ -103,9 +104,9 @@ struct Smem_tile_without_skews {
     // Do we enable the LDS.128 fast path?
     enum { ENABLE_LDS_FAST_PATH = ENABLE_LDS_FAST_PATH_ };
     static_assert(ENABLE_LDS_FAST_PATH == 0);
-    // The number of rows that are used for the XOR swizzling to allow fast STS/LDS. 
+    // The number of rows that are used for the XOR swizzling to allow fast STS/LDS.
     enum { ROWS_PER_XOR_PATTERN = ROWS_PER_XOR_PATTERN_ };
-    // The number of cols that are used for the XOR swizzling to allow fast STS/LDS. 
+    // The number of cols that are used for the XOR swizzling to allow fast STS/LDS.
     enum { COLS_PER_XOR_PATTERN = COLS_PER_XOR_PATTERN_ * 16 / BYTES_PER_STS };
     // Use or not predicates
     enum { USE_PREDICATES = USE_PREDICATES_ };
@@ -114,7 +115,7 @@ struct Smem_tile_without_skews {
     using Store_type = typename Uint_from_size_in_bytes<BYTES_PER_STS>::Type;
 
     // Ctor.
-    inline __device__ Smem_tile_without_skews(void *smem, int tidx) 
+    inline __device__ Smem_tile_without_skews(void *smem, int tidx)
         : smem_(__nvvm_get_smem_pointer(smem)) {
 
         // The row written by a thread. See doc/mma_smem_layout.xlsx.
@@ -129,8 +130,8 @@ struct Smem_tile_without_skews {
         this->smem_write_offset_ = smem_write_row*BYTES_PER_ROW + smem_write_col*BYTES_PER_STS;
 
         // TODO: Why not merge it with the read offset?
-        this->smem_read_buffer_ = __shfl_sync(0xffffffff, 0, 0);
-        this->smem_write_buffer_ = __shfl_sync(0xffffffff, 0, 0);
+        // this->smem_read_buffer_ = __shfl_sync(0xffffffff, 0, 0);
+        // this->smem_write_buffer_ = __shfl_sync(0xffffffff, 0, 0);
     }
 
     // Compute the store pointers.
@@ -147,7 +148,7 @@ struct Smem_tile_without_skews {
 
             // Take the column into account.
             if( STS_PER_ROW > 1 ) {
-                offset += col*THREADS_PER_ROW*BYTES_PER_STS; 
+                offset += col*THREADS_PER_ROW*BYTES_PER_STS;
             }
 
             // Apply the XOR pattern if needed.
@@ -157,7 +158,9 @@ struct Smem_tile_without_skews {
             }
 
             // Assemble the final pointer :)
-            ptrs[ii] = smem_ + offset + smem_write_buffer_;
+            // ptrs[ii] = smem_ + offset + smem_write_buffer_;
+            // smem_write_buffer_ is already merged with smem_write_offset_
+            ptrs[ii] = smem_ + offset;
         }
     }
 
@@ -199,10 +202,15 @@ struct Smem_tile_without_skews {
 
     // Move the read offset to next buffer.
     inline __device__ void move_to_next_read_buffer() {
-        if( BUFFERS_PER_TILE > 1 && smem_read_buffer_ >= BYTES_PER_TILE_INC_BOUNDARY ) {
-            this->smem_read_buffer_ -= BYTES_PER_TILE_INC_BOUNDARY;
+        // if( BUFFERS_PER_TILE > 1 && smem_read_buffer_ >= BYTES_PER_TILE_INC_BOUNDARY ) {
+        //     this->smem_read_buffer_ -= BYTES_PER_TILE_INC_BOUNDARY;
+        // } else if( BUFFERS_PER_TILE > 1 ) {
+        //     this->smem_read_buffer_ += BYTES_PER_BUFFER;
+        // }
+        if( BUFFERS_PER_TILE > 1 && smem_read_offset_ >= BYTES_PER_TILE_INC_BOUNDARY ) {
+            this->smem_read_offset_ -= BYTES_PER_TILE_INC_BOUNDARY;
         } else if( BUFFERS_PER_TILE > 1 ) {
-            this->smem_read_buffer_ += BYTES_PER_BUFFER;
+            this->smem_read_offset_ += BYTES_PER_BUFFER;
         }
     }
 
@@ -214,8 +222,10 @@ struct Smem_tile_without_skews {
     // Move the read offset to next N buffer (circular-buffer).
     inline __device__ void move_to_next_read_buffer(int N) {
         if( BUFFERS_PER_TILE > 1 ) {
-            this->smem_read_buffer_ += N * BYTES_PER_BUFFER;
-            this->smem_read_buffer_ -= smem_read_buffer_ >= BYTES_PER_TILE ? BYTES_PER_TILE : 0;
+            // this->smem_read_buffer_ += N * BYTES_PER_BUFFER;
+            // this->smem_read_buffer_ -= smem_read_buffer_ >= BYTES_PER_TILE ? BYTES_PER_TILE : 0;
+            this->smem_read_offset_ += N * BYTES_PER_BUFFER;
+            this->smem_read_offset_ -= smem_read_offset_ >= BYTES_PER_TILE ? BYTES_PER_TILE : 0;
         }
     }
 
@@ -226,10 +236,15 @@ struct Smem_tile_without_skews {
 
     // Move the write offset to next buffer.
     inline __device__ void move_to_next_write_buffer() {
-        if( BUFFERS_PER_TILE > 1 && smem_write_buffer_ >= BYTES_PER_TILE_INC_BOUNDARY ) {
-            this->smem_write_buffer_ -= BYTES_PER_TILE_INC_BOUNDARY;
+        // if( BUFFERS_PER_TILE > 1 && smem_write_buffer_ >= BYTES_PER_TILE_INC_BOUNDARY ) {
+        //     this->smem_write_buffer_ -= BYTES_PER_TILE_INC_BOUNDARY;
+        // } else if( BUFFERS_PER_TILE > 1 ) {
+        //     this->smem_write_buffer_ += BYTES_PER_BUFFER;
+        // }
+        if( BUFFERS_PER_TILE > 1 && smem_write_offset_ >= BYTES_PER_TILE_INC_BOUNDARY ) {
+            this->smem_write_offset_ -= BYTES_PER_TILE_INC_BOUNDARY;
         } else if( BUFFERS_PER_TILE > 1 ) {
-            this->smem_write_buffer_ += BYTES_PER_BUFFER;
+            this->smem_write_offset_ += BYTES_PER_BUFFER;
         }
     }
 
@@ -266,7 +281,7 @@ struct Smem_tile_without_skews {
 
     // Store to the tile in shared memory.
     template< int N >
-    inline __device__ void store(const Store_type (&data)[N], uint32_t preds, uint64_t = 0) { 
+    inline __device__ void store(const Store_type (&data)[N], uint32_t preds, uint64_t = 0) {
         this->store(data, preds);
     }
 
@@ -278,24 +293,24 @@ struct Smem_tile_without_skews {
     }
 
     // The shared memory pointer.
-    uint32_t smem_;
+    const uint32_t smem_;
     // The read offset. Reserve 4 offsets if needed.
     int smem_read_offset_;
     // The write offset.
     int smem_write_offset_;
     // The buffer base offset for read.
-    int smem_read_buffer_;
+    // int smem_read_buffer_;
     // The buffer base offset for write.
-    int smem_write_buffer_;
+    // int smem_write_buffer_;
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-template< 
+template<
     // The dimensions of the tile computed by the CTA.
-    typename Cta_tile, 
+    typename Cta_tile,
     // The layout of the tile.
-    typename Layout, 
+    typename Layout,
     // The size of the STS.
     int BYTES_PER_STS = 16,
     // The number of buffers per tile.
@@ -405,15 +420,16 @@ struct Smem_tile_row_a : public Smem_tile_without_skews<Cta_tile,
         static_assert(WARPS_M == 1);
         static_assert(WARPS_N == 4 || WARPS_N == 8);
         static_assert(WARPS_K == 1);
-        static_assert(Base::ROWS_PER_XOR_PATTERN == 8);
+        static_assert(Base::ROWS_PER_XOR_PATTERN == 2 || Base::ROWS_PER_XOR_PATTERN == 4 || Base::ROWS_PER_XOR_PATTERN == 8);
 
         // The row and column read by the thread.
         int smem_read_row  = (tidx & 0x0f);
-        int smem_read_col  = (tidx & 0x07);
+        constexpr int ROWS_PER_PACKING = Base::BYTES_PER_ROW / Base::BYTES_PER_ROW_BEFORE_PACKING;
+        int smem_read_col = ((smem_read_row / ROWS_PER_PACKING) % Base::ROWS_PER_XOR_PATTERN) * Base::COLS_PER_XOR_PATTERN;
         smem_read_col ^= (tidx & 0x10) / 16;
 
         // The shared memory offset.
-        this->smem_read_offset_ = smem_read_row*Base::BYTES_PER_ROW + smem_read_col*BYTES_PER_LDS;
+        this->smem_read_offset_ = smem_read_row*Base::BYTES_PER_ROW_BEFORE_PACKING + smem_read_col*BYTES_PER_LDS;
     }
 
     // Rewind smem_read_offset for last LDS phase in main loop.
@@ -434,7 +450,8 @@ struct Smem_tile_row_a : public Smem_tile_without_skews<Cta_tile,
 
             // Load using LDSM.M88.4.
             uint4 tmp;
-            ldsm(tmp, this->smem_ + this->smem_read_offset_ + this->smem_read_buffer_ + offset);
+            // ldsm(tmp, this->smem_ + this->smem_read_offset_ + this->smem_read_buffer_ + offset);
+            ldsm(tmp, this->smem_ + this->smem_read_offset_ + offset);
 
             // Store the value into the fragment.
             a[mi].reg(0) = tmp.x;
@@ -497,11 +514,11 @@ struct Smem_tile_a<Cta_tile, Row, BYTES_PER_STS, BUFFERS_PER_TILE>
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-template< 
+template<
     // The dimensions of the tile computed by the CTA.
-    typename Cta_tile, 
+    typename Cta_tile,
     // The layout of the tile.
-    typename Layout, 
+    typename Layout,
     // The size of the STS.
     int BYTES_PER_STS = 16,
     // The number of buffers per tile.
@@ -586,7 +603,7 @@ struct Smem_tile_col_b : public Smem_tile_without_skews<Cta_tile,
         const int WARPS_M = Cta_tile::WARPS_M;
         const int WARPS_N = Cta_tile::WARPS_N;
         const int WARPS_K = Cta_tile::WARPS_K;
-        static_assert(Base::ROWS_PER_XOR_PATTERN == 8);
+        static_assert(Base::ROWS_PER_XOR_PATTERN == 2 || Base::ROWS_PER_XOR_PATTERN == 4 || Base::ROWS_PER_XOR_PATTERN == 8);
         static_assert(WARPS_M == 1);
         static_assert(WARPS_N == 4 || WARPS_N == 8);
         static_assert(WARPS_K == 1);
@@ -601,10 +618,11 @@ struct Smem_tile_col_b : public Smem_tile_without_skews<Cta_tile,
         int smem_read_row  = (tidx & WARP_MASK_N) / WARP_DIV_N * Mma_tile::N_PER_MMA +
                              (tidx & 0x07) +
                              (tidx & 0x10) / 2;
-        int smem_read_col  = (tidx & 0x07);
+        constexpr int ROWS_PER_PACKING = Base::BYTES_PER_ROW / Base::BYTES_PER_ROW_BEFORE_PACKING;
+        int smem_read_col = ((smem_read_row / ROWS_PER_PACKING) % Base::ROWS_PER_XOR_PATTERN) * Base::COLS_PER_XOR_PATTERN;
         smem_read_col ^= (tidx & 0x08) / 8;
         // The shared memory offset.
-        this->smem_read_offset_ = smem_read_row*Base::BYTES_PER_ROW + smem_read_col*BYTES_PER_LDS;
+        this->smem_read_offset_ = smem_read_row*Base::BYTES_PER_ROW_BEFORE_PACKING + smem_read_col*BYTES_PER_LDS;
     }
 
     // Rewind smem_read_offset for last LDS phase in main loop.
@@ -625,7 +643,8 @@ struct Smem_tile_col_b : public Smem_tile_without_skews<Cta_tile,
 
             // Load using LDSM.M88.4.
             uint4 tmp;
-            ldsm(tmp, this->smem_ + this->smem_read_offset_ + this->smem_read_buffer_ + offset);
+            // ldsm(tmp, this->smem_ + this->smem_read_offset_ + this->smem_read_buffer_ + offset);
+            ldsm(tmp, this->smem_ + this->smem_read_offset_ + offset);
 
             // Store the value into the fragment.
             b[ni].reg(0) = tmp.x;
@@ -763,19 +782,19 @@ struct Smem_tile_row_b : public Smem_tile_without_skews<Cta_tile,
         const int WARP_DIV_N = WARPS_M *       1 * Cta_tile::THREADS_PER_WARP;
         const int WARP_DIV_K = WARPS_M * WARPS_N * Cta_tile::THREADS_PER_WARP;
 
-        // The row/col read by the thread.
-        int smem_read_row, smem_read_col;
 
         static_assert(USE_LDSMT);
-        static_assert(Base::ROWS_PER_XOR_PATTERN == 8);
+        static_assert(Base::ROWS_PER_XOR_PATTERN == 2 || Base::ROWS_PER_XOR_PATTERN == 4 || Base::ROWS_PER_XOR_PATTERN == 8);
 
-        smem_read_row = (tidx & WARP_MASK_K) / WARP_DIV_K * Mma_tile::MMAS_K * 16 +
-                        (tidx & 0x07) + (tidx & 0x08);
-        smem_read_col = (tidx & 0x07);
+        // The row/col read by the thread.
+        int smem_read_row = (tidx & WARP_MASK_K) / WARP_DIV_K * Mma_tile::MMAS_K * 16 +
+                            (tidx & 0x07) + (tidx & 0x08);
+        constexpr int ROWS_PER_PACKING = Base::BYTES_PER_ROW / Base::BYTES_PER_ROW_BEFORE_PACKING;
+        int smem_read_col = ((smem_read_row / ROWS_PER_PACKING) % Base::ROWS_PER_XOR_PATTERN) * Base::COLS_PER_XOR_PATTERN;
         smem_read_col ^= (tidx & WARP_MASK_N) / WARP_DIV_N * 2 + (tidx & 0x10) / 16;
 
         // The shared memory offset.
-        this->smem_read_offset_ = smem_read_row*Base::BYTES_PER_ROW + smem_read_col*BYTES_PER_LDS;
+        this->smem_read_offset_ = smem_read_row*Base::BYTES_PER_ROW_BEFORE_PACKING + smem_read_col*BYTES_PER_LDS;
 
         // Fill zeroes for group conv
     }
@@ -821,7 +840,7 @@ struct Smem_tile_row_b : public Smem_tile_without_skews<Cta_tile,
         #pragma unroll
         for( int ni = 0; ni < Mma_tile::MMAS_N; ++ni ) {
             // Prepare the offset.
-            int offset = ki * Base::ROWS_PER_XOR_PATTERN * 2 * Base::BYTES_PER_ROW;
+            int offset = ki * Base::ROWS_PER_XOR_PATTERN * 2 * Base::BYTES_PER_ROW_BEFORE_PACKING;
                 if ( BYTES_PER_MMA_PER_CTA == 32 ) {
                     offset += this->smem_read_offset_;
                 } else if ( BYTES_PER_MMA_PER_CTA == 64 ) {
@@ -831,15 +850,16 @@ struct Smem_tile_row_b : public Smem_tile_without_skews<Cta_tile,
                 }
 
             // Load the data using LDSM.MT88.2.
-            uint32_t ptr = this->smem_ + this->smem_read_buffer_ + offset;
+            // uint32_t ptr = this->smem_ + this->smem_read_buffer_ + offset;
+            uint32_t ptr = this->smem_ + offset;
             uint4 tmp;
             if( USE_LDSMT ) {
                 ldsmt(tmp, ptr);
             } else {
-                lds(tmp.x, (ptr     ) + 0*Base::BYTES_PER_ROW);
-                lds(tmp.y, (ptr     ) + 4*Base::BYTES_PER_ROW);
-                lds(tmp.z, (ptr ^ 32) + 0*Base::BYTES_PER_ROW);
-                lds(tmp.w, (ptr ^ 32) + 4*Base::BYTES_PER_ROW);
+                lds(tmp.x, (ptr     ) + 0*Base::BYTES_PER_ROW_BEFORE_PACKING);
+                lds(tmp.y, (ptr     ) + 4*Base::BYTES_PER_ROW_BEFORE_PACKING);
+                lds(tmp.z, (ptr ^ 32) + 0*Base::BYTES_PER_ROW_BEFORE_PACKING);
+                lds(tmp.w, (ptr ^ 32) + 4*Base::BYTES_PER_ROW_BEFORE_PACKING);
             }
 
             // Store those values in the fragment.
@@ -896,10 +916,10 @@ struct Smem_tile_b<Cta_tile, Row, BYTES_PER_STS, BUFFERS_PER_TILE>
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 template<typename Cta_tile>
-struct Smem_tile_v : public fmha::Smem_tile_without_skews<Cta_tile, Cta_tile::K, Cta_tile::N, 16, 16, 1, 0, 8, 1> {
+struct Smem_tile_v : public fmha::Smem_tile_without_skews<Cta_tile, Cta_tile::K, Cta_tile::N, 16, 16, 1, 0, Rows_per_xor_pattern_col_b<Cta_tile::N>::VALUE, 1> {
 
     // The base class.
-    using Base = Smem_tile_without_skews<Cta_tile, Cta_tile::K, Cta_tile::N, 16, 16, 1, 0, 8, 1>;
+    using Base = Smem_tile_without_skews<Cta_tile, Cta_tile::K, Cta_tile::N, 16, 16, 1, 0, Rows_per_xor_pattern_col_b<Cta_tile::N>::VALUE, 1>;
     // The MMA tile.
     using Mma_tile = fmha::Hmma_tile<Cta_tile>;
     // The fragment.
@@ -917,11 +937,12 @@ struct Smem_tile_v : public fmha::Smem_tile_without_skews<Cta_tile, Cta_tile::K,
         static_assert(Cta_tile::WARPS_M == 1 && Cta_tile::WARPS_N == 1 && (Cta_tile::WARPS_K == 4 || Cta_tile::WARPS_K == 8));
 
         read_row = (tidx & 0xe0) / 2 + (tidx & 0x0f);
-        read_col = (tidx & 0x07);
+        constexpr int ROWS_PER_PACKING = Base::BYTES_PER_ROW / Base::BYTES_PER_ROW_BEFORE_PACKING;
+        read_col = ((read_row / ROWS_PER_PACKING) % Base::ROWS_PER_XOR_PATTERN) * Base::COLS_PER_XOR_PATTERN;
         read_col ^= (tidx & 0x10) / 16;
 
         // The shared memory offset.
-        this->smem_read_offset_ = read_row * Base::BYTES_PER_ROW + read_col * BYTES_PER_LDS;
+        this->smem_read_offset_ = read_row * Base::BYTES_PER_ROW_BEFORE_PACKING + read_col * BYTES_PER_LDS;
     }
 
     // Load from shared memory.
@@ -933,15 +954,21 @@ struct Smem_tile_v : public fmha::Smem_tile_without_skews<Cta_tile, Cta_tile::K,
 
             // Load the data using LDSM.MT88.2.
             uint4 tmp;
-            fmha::ldsmt(tmp, this->smem_ + this->smem_read_offset_ + row * Base::BYTES_PER_ROW);
+            fmha::ldsmt(tmp, this->smem_ + this->smem_read_offset_ + row * Base::BYTES_PER_ROW_BEFORE_PACKING);
             b[ni].reg(0) = tmp.x;
             b[ni].reg(1) = tmp.y;
             b[ni].reg(2) = tmp.z;
             b[ni].reg(3) = tmp.w;
 
             // Move the pointer for the next ni. I expect the compiler to not recompute those.
-            if( Mma_tile::MMAS_N == 4 ) {
+            if( Mma_tile::MMAS_N == 1 ) {
+                // noop
+            } else if( Mma_tile::MMAS_N == 2 ) {
+                this->smem_read_offset_ ^= BYTES_PER_LDS * 2;
+            } else if( Mma_tile::MMAS_N == 4 ) {
                 this->smem_read_offset_ ^= BYTES_PER_LDS * (ni % 2 == 0 ? 2 : 6);
+            } else if (Mma_tile::MMAS_N == 8) {
+                this->smem_read_offset_ ^= BYTES_PER_LDS * (ni % 4 == 3 ? 14 : (ni % 2 == 1 ? 6 : 2));
             } else {
                 assert(false);  // Not implemented!
             }
@@ -962,41 +989,41 @@ struct Smem_tile_o {
     using Data_type = typename Accumulator::Data_type;
 
     // The size of each element.
-    enum { BYTES_PER_ELEMENT = sizeof(Data_type) };
+    static constexpr int BYTES_PER_ELEMENT = sizeof(Data_type);
     // The size of each STS.
-    enum { BYTES_PER_STS = 8 };
+    static constexpr int BYTES_PER_STS = 8;
     // The size of each row in shared memory.
-    enum { BYTES_PER_ROW = Cta_tile::N * Cta_tile::WARPS_K * BYTES_PER_ELEMENT };
+    static constexpr int BYTES_PER_ROW = Cta_tile::N * Cta_tile::WARPS_K * BYTES_PER_ELEMENT;
 
     // The size of each LDS.
-    enum { BYTES_PER_LDS = 16 };
-    enum { THREADS_PER_ROW = 16 };
+    static constexpr int BYTES_PER_LDS = 16;
+    static constexpr int THREADS_PER_ROW = Cta_tile::N * BYTES_PER_ELEMENT / BYTES_PER_LDS;
 
     // The number of rows.
-    enum { ROWS = Cta_tile::M };
+    static constexpr int ROWS = Cta_tile::M;
     // The number of "rows" to process per loop iteration (in the "epilogue").
-    enum { ROWS_PER_LOOP = ROWS <= 64 ? ROWS : (int)Mma_tile::M_PER_MMA_PER_CTA };
+    static constexpr int ROWS_PER_LOOP = ROWS <= 64 ? ROWS : (int)Mma_tile::M_PER_MMA_PER_CTA;
     // The number of outer loops.
-    enum { LOOPS = ROWS / ROWS_PER_LOOP };
+    static constexpr int LOOPS = ROWS / ROWS_PER_LOOP;
     // Make sure it matches our expectations.
     static_assert(LOOPS == 1 || LOOPS == (int)Mma_tile::MMAS_M, "");
 
     // The number of rows loaded per LDS.
-    enum { ROWS_PER_LDS = Cta_tile::THREADS_PER_CTA / THREADS_PER_ROW };
+    static constexpr int ROWS_PER_LDS = Cta_tile::THREADS_PER_CTA / THREADS_PER_ROW;
     // Do we have to guard against partial writes/reads.
-    enum { HAS_INCOMPLETE_LDS = ROWS_PER_LOOP % ROWS_PER_LDS != 0 };
+    static constexpr bool HAS_INCOMPLETE_LDS = ROWS_PER_LOOP % ROWS_PER_LDS != 0;
     // The total number of LDS per loop.
-    enum { LDS_PER_LOOP = fmha::Div_up<ROWS_PER_LOOP, ROWS_PER_LDS>::VALUE };
+    static constexpr int LDS_PER_LOOP = fmha::DivUpConstexpr(ROWS_PER_LOOP, ROWS_PER_LDS);
 
     // The amount of shared memory.
-    enum { BYTES_PER_TILE = ROWS_PER_LOOP * BYTES_PER_ROW };
+    static constexpr int BYTES_PER_TILE = ROWS_PER_LOOP * BYTES_PER_ROW;
 
     // The write pointer.
     uint32_t smem_write_, smem_read_;
     // Is the thread active for the last LDS of the series?
     int is_active_for_last_lds_;
 
-    static_assert(BYTES_PER_ROW == 64 * 4 * Cta_tile::WARPS_K);
+    // static_assert(BYTES_PER_ROW == 64 * 4 * Cta_tile::WARPS_K);
     static_assert(LOOPS == 1 || LOOPS == (int)Mma_tile::MMAS_M, "");
 
     // Ctor.
@@ -1006,9 +1033,16 @@ struct Smem_tile_o {
         uint32_t smem_ = __nvvm_get_smem_pointer(smem);
 
         static_assert(Cta_tile::WARPS_M == 1 && Cta_tile::WARPS_N == 1 && (Cta_tile::WARPS_K == 4 || Cta_tile::WARPS_K == 8));
+        static_assert(Cta_tile::N == 16 || Cta_tile::N == 32 || Cta_tile::N == 64 || Cta_tile::N == 128);
 
         int write_row = (tidx & 0x1c) / 4;
-        int write_col = (tidx);
+
+        const int lane = tidx % 32;
+        const int warp = tidx / 32;
+
+        constexpr int ELEMENTS_PER_STS = BYTES_PER_STS / BYTES_PER_ELEMENT;
+        constexpr int STS_PER_WARP = 16 * Mma_tile::MMAS_N / ELEMENTS_PER_STS;
+        int write_col = warp * STS_PER_WARP + lane % STS_PER_WARP;
 
         // Assemble the write pointer.
         smem_write_ = smem_ + write_row * BYTES_PER_ROW + write_col * BYTES_PER_STS;
@@ -1018,7 +1052,8 @@ struct Smem_tile_o {
         int read_col = tidx % THREADS_PER_ROW;
 
         // Take the XOR pattern into account for the column.
-        read_col ^= 2 * (read_row & 0x7);
+        // read_col ^= 2 * (read_row % (Cta_tile::N == 16 ? 2 : (Cta_tile::N == 32 ? 4 : 8)));
+        read_col ^= 2 * (read_row % (Cta_tile::N == 16 ? 2 : (Cta_tile::N == 32 ? 4 : (Cta_tile::N == 128 ? 16 : 8))));
 
         // Assemble the read pointer.
         this->smem_read_ = smem_ + read_row * BYTES_PER_ROW + read_col * BYTES_PER_LDS;
@@ -1030,6 +1065,7 @@ struct Smem_tile_o {
     }
 
     // Load the output fragments.
+    template <bool zero_init=true>
     inline __device__ void load(uint4 (&out)[LDS_PER_LOOP]) const {
         #pragma unroll
         for( int ii = 0; ii < LDS_PER_LOOP; ++ii ) {
@@ -1045,22 +1081,23 @@ struct Smem_tile_o {
             }
 
             // Perform the reduction.
-            out[ii] = tmp[0];
+            out[ii] = zero_init ? tmp[0] : fmha::fadd4(out[ii], tmp[0]);
             #pragma unroll
             for( int jj = 1; jj < Cta_tile::WARPS_K; ++jj ) {
                 out[ii] = fmha::fadd4(out[ii], tmp[jj]);
             }
         }
     }
+
     // Store the accumulators.
     template <int M, int N>
     inline __device__ void store(const Accumulator (&acc)[M][N], int mi) {
-        enum { M_PER_MMA = Mma_tile::M_PER_MMA_PER_CTA };
+        static constexpr int M_PER_MMA = Mma_tile::M_PER_MMA_PER_CTA;
         #pragma unroll
         for( int ni = 0; ni < Mma_tile::MMAS_N; ++ni ) {
 
             // The number of MMAs that are stored per loop iteration.
-            enum { MMAS_M_PER_LOOP = Mma_tile::MMAS_M / LOOPS };
+            static constexpr int MMAS_M_PER_LOOP = Mma_tile::MMAS_M / LOOPS;
 
             // Store 1st column of the different MMAs.
             #pragma unroll
@@ -1127,7 +1164,7 @@ struct Smem_tile_mma {
 
     static_assert(WARPS_K == 1);
     inline __device__ Smem_tile_mma(char *smem, int tidx) {
-        smem_ = __nvvm_get_smem_pointer(smem);
+        uint32_t smem_ = __nvvm_get_smem_pointer(smem);
 
         int write_col, write_row;
         static_assert(WARPS_M == 1 && (WARPS_N == 4 || WARPS_N == 8) || (WARPS_M == 4 || WARPS_N == 8) || WARPS_N == 1);
@@ -1138,31 +1175,56 @@ struct Smem_tile_mma {
             write_row = (tidx & 0xe0) / 2 + (tidx & 0x1c) / 4;
             write_col = (tidx & 0x03);
         }
-        write_col ^= (write_row & 0x07) * 4;
+        // TODO [TD] Only works for, D=16, D=32 or D=64
+        write_col ^= (write_row & (BYTES_PER_ROW == 32 ? 0x01 : (BYTES_PER_ROW == 64 ? 0x03 : 0x07))) * 4;
 
-        write_offset_ = write_row * BYTES_PER_ROW + write_col * BYTES_PER_STS;
+        // write_offset_ = write_row * BYTES_PER_ROW + write_col * BYTES_PER_STS;
+        smem_write_ = smem_ + write_row * BYTES_PER_ROW + write_col * BYTES_PER_STS;
     }
 
     template<int M, int N>
     inline __device__ void store(const uint4 (&regs)[M][N]) {
         static_assert(COLS == Cta_tile::N);
+        #pragma unroll
         for( int mi = 0; mi < M; mi++ ) {
+            #pragma unroll
             for( int ni = 0; ni < N; ni++ ) {
-                size_t offset = write_offset_ + mi * WARPS_M * 16 * BYTES_PER_ROW + ni * WARPS_N * 16 * BYTES_PER_ELT;
-                fmha::sts(smem_ + offset + 0 * BYTES_PER_ROW, regs[mi][ni].x);
-                fmha::sts(smem_ + offset + 8 * BYTES_PER_ROW, regs[mi][ni].z);
+                // size_t offset = write_offset_ + mi * WARPS_M * 16 * BYTES_PER_ROW + ni * WARPS_N * 16 * BYTES_PER_ELT;
+                // fmha::sts(smem_ + offset + 0 * BYTES_PER_ROW, regs[mi][ni].x);
+                // fmha::sts(smem_ + offset + 8 * BYTES_PER_ROW, regs[mi][ni].z);
+                // offset ^= 4 * BYTES_PER_STS;
+                // fmha::sts(smem_ + offset + 0 * BYTES_PER_ROW, regs[mi][ni].y);
+                // fmha::sts(smem_ + offset + 8 * BYTES_PER_ROW, regs[mi][ni].w);
+                // size_t offset = smem_write_ + mi * WARPS_M * 16 * BYTES_PER_ROW + ni * WARPS_N * 16 * BYTES_PER_ELT;
+                uint32_t offset = smem_write_ + mi * WARPS_M * 16 * BYTES_PER_ROW + ni * WARPS_N * 16 * BYTES_PER_ELT;
+                fmha::sts(offset + 0 * BYTES_PER_ROW, regs[mi][ni].x);
+                fmha::sts(offset + 8 * BYTES_PER_ROW, regs[mi][ni].z);
                 offset ^= 4 * BYTES_PER_STS;
-                fmha::sts(smem_ + offset + 0 * BYTES_PER_ROW, regs[mi][ni].y);
-                fmha::sts(smem_ + offset + 8 * BYTES_PER_ROW, regs[mi][ni].w);
+                fmha::sts(offset + 0 * BYTES_PER_ROW, regs[mi][ni].y);
+                fmha::sts(offset + 8 * BYTES_PER_ROW, regs[mi][ni].w);
             }
         }
     }
 
-    uint32_t smem_;
-    uint32_t write_offset_;
-    uint32_t warp_m;
-    uint32_t warp_n;
-    uint32_t lane;
+    template<typename Fragment, int M, int N>
+    inline __device__ void store(const Fragment (&frag)[N][M]) {
+        static_assert(COLS == Cta_tile::N);
+        uint4 regs[M][N];
+        #pragma unroll
+        for( int mi = 0; mi < M; mi++ ) {
+            #pragma unroll
+            for( int ni = 0; ni < N; ni++ ) {
+                // Need to transpose ref(1) and reg(2) here since when we load it we transpose again.
+                regs[mi][ni] = make_uint4(frag[ni][mi].reg(0), frag[ni][mi].reg(2),
+                                          frag[ni][mi].reg(1), frag[ni][mi].reg(3));
+            }
+        }
+        this->store(regs);
+    }
+
+    // uint32_t smem_;
+    // uint32_t write_offset_;
+    uint32_t smem_write_;
 };
 
 template< typename Cta_tile, typename Base = Smem_tile_mma< Cta_tile>>
@@ -1176,13 +1238,15 @@ struct Smem_tile_mma_transposed : public Base {
     using Fragment = typename Base::Fragment;
     inline __device__ Smem_tile_mma_transposed(char *smem, int tidx) : Base(smem, tidx) {
 
+        uint32_t smem_ = __nvvm_get_smem_pointer(smem);
         static_assert(WARPS_M == 1 && (WARPS_N == 4 || WARPS_N == 8));
         int read_row, read_col;
         read_row = (tidx & 0x0f);
         read_col = (tidx & 0xe0) / 16 + (tidx & 0x1c) / 16;
 
-        read_col ^= (read_row & 0x07);
-        read_offset_ = read_row * BYTES_PER_ROW + read_col * BYTES_PER_LDS;
+        read_col ^= (read_row & (Base::BYTES_PER_ROW == 32 ? 0x01 : (Base::BYTES_PER_ROW == 64 ? 0x03 : 0x07)));
+        // read_offset_ = read_row * BYTES_PER_ROW + read_col * BYTES_PER_LDS;
+        smem_read_ = smem_ + read_row * BYTES_PER_ROW + read_col * BYTES_PER_LDS;
     }
 
     template<int M, int N>
@@ -1190,9 +1254,12 @@ struct Smem_tile_mma_transposed : public Base {
         static_assert(Base::COLS == Cta_tile::N);
         for( int mi = 0; mi < M; mi++ ) {
             for( int ni = 0; ni < N; ni++ ) {
-                size_t offset = read_offset_ + mi * WARPS_M * 16 * BYTES_PER_ROW + ni * WARPS_N * 16 * BYTES_PER_ELT;
+                // size_t offset = read_offset_ + mi * WARPS_M * 16 * BYTES_PER_ROW + ni * WARPS_N * 16 * BYTES_PER_ELT;
                 uint4 dst;
-                fmha::ldsmt(dst, this->smem_ + offset);
+                // fmha::ldsmt(dst, this->smem_ + offset);
+                // size_t offset = smem_read_ + mi * WARPS_M * 16 * BYTES_PER_ROW + ni * WARPS_N * 16 * BYTES_PER_ELT;
+                uint32_t offset = smem_read_ + mi * WARPS_M * 16 * BYTES_PER_ROW + ni * WARPS_N * 16 * BYTES_PER_ELT;
+                fmha::ldsmt(dst, offset);
                 frag[mi][ni].reg(0) = dst.x;
                 frag[mi][ni].reg(1) = dst.z;  // Fragment A regs col major!
                 frag[mi][ni].reg(2) = dst.y;
@@ -1201,7 +1268,8 @@ struct Smem_tile_mma_transposed : public Base {
         }
     }
 
-    uint32_t read_offset_;
+    // uint32_t read_offset_;
+    uint32_t smem_read_;
 };
 
 template< typename Cta_tile, typename Base = Smem_tile_mma< Cta_tile>>
@@ -1217,20 +1285,25 @@ struct Smem_tile_mma_epilogue : public Base {
     enum { WARPS_M = Base::WARPS_M };
     enum { WARPS_N = Base::WARPS_N };
     static_assert((WARPS_M == 4 || WARPS_N == 8) || WARPS_N == 1);
-    
+
     using Acc = fmha::Fragment_accumulator;
 
     inline __device__ Smem_tile_mma_epilogue(char *smem, int tidx) : Base(smem, tidx) {
+        uint32_t smem_ = __nvvm_get_smem_pointer(smem);
         const int read_row = tidx / THREADS_PER_ROW;
         int read_col = tidx % THREADS_PER_ROW;
-        read_col ^= (read_row & 0x07);
-        read_offset_ = read_row * BYTES_PER_ROW + read_col * BYTES_PER_LDS;
+        read_col ^= (read_row & (Base::BYTES_PER_ROW == 32 ? 0x01 : (Base::BYTES_PER_ROW == 64 ? 0x03 : 0x07)));
+        // read_offset_ = read_row * BYTES_PER_ROW + read_col * BYTES_PER_LDS;
+        smem_read_ = smem_ + read_row * BYTES_PER_ROW + read_col * BYTES_PER_LDS;
     }
 
     inline __device__ void load(uint4 (&data)[NUM_LDS]) {
         for( int ii = 0; ii < NUM_LDS; ii++ ) {
-            size_t offset = read_offset_ + ii * ROWS_PER_LDS * BYTES_PER_ROW;
-            fmha::lds(data[ii], this->smem_ + offset);
+            // size_t offset = read_offset_ + ii * ROWS_PER_LDS * BYTES_PER_ROW;
+            // fmha::lds(data[ii], this->smem_ + offset);
+            // size_t offset = smem_read_ + ii * ROWS_PER_LDS * BYTES_PER_ROW;
+            uint32_t offset = smem_read_ + ii * ROWS_PER_LDS * BYTES_PER_ROW;
+            fmha::lds(data[ii], offset);
         }
     }
 
@@ -1255,13 +1328,20 @@ struct Smem_tile_mma_epilogue : public Base {
                 uint32_t y = fmha::float2_to_half2(tmp02, tmp03);
                 uint32_t z = fmha::float2_to_half2(tmp10, tmp11);
                 uint32_t w = fmha::float2_to_half2(tmp12, tmp13);
-     
-                size_t offset = (this->write_offset_ ^ (ni * 32)) + mi * WARPS_M * 16 * BYTES_PER_ROW;
-                fmha::sts(this->smem_ + offset + 0 * BYTES_PER_ROW, x);
-                fmha::sts(this->smem_ + offset + 8 * BYTES_PER_ROW, z);
+
+                // size_t offset = (this->write_offset_ ^ (ni * 32)) + mi * WARPS_M * 16 * BYTES_PER_ROW;
+                // fmha::sts(this->smem_ + offset + 0 * BYTES_PER_ROW, x);
+                // fmha::sts(this->smem_ + offset + 8 * BYTES_PER_ROW, z);
+                // offset ^= 4 * Base::BYTES_PER_STS;
+                // fmha::sts(this->smem_ + offset + 0 * BYTES_PER_ROW, y);
+                // fmha::sts(this->smem_ + offset + 8 * BYTES_PER_ROW, w);
+                // size_t offset = (this->smem_write_ ^ (ni * 32)) + mi * WARPS_M * 16 * BYTES_PER_ROW;
+                uint32_t offset = (this->smem_write_ ^ (ni * 32)) + mi * WARPS_M * 16 * BYTES_PER_ROW;
+                fmha::sts(offset + 0 * BYTES_PER_ROW, x);
+                fmha::sts(offset + 8 * BYTES_PER_ROW, z);
                 offset ^= 4 * Base::BYTES_PER_STS;
-                fmha::sts(this->smem_ + offset + 0 * BYTES_PER_ROW, y);
-                fmha::sts(this->smem_ + offset + 8 * BYTES_PER_ROW, w);
+                fmha::sts(offset + 0 * BYTES_PER_ROW, y);
+                fmha::sts(offset + 8 * BYTES_PER_ROW, w);
             }
         }
     }
@@ -1270,7 +1350,8 @@ struct Smem_tile_mma_epilogue : public Base {
     inline __device__ void store(const uint4 (&regs)[M][N]) {
         for( int mi = 0; mi < M; mi++ ) {
             for( int ni = 0; ni < N; ni++ ) {
-                size_t offset = (this->write_offset_ ^ (ni * 32)) + mi * WARPS_M * 16 * BYTES_PER_ROW;
+                // size_t offset = (this->write_offset_ ^ (ni * 32)) + mi * WARPS_M * 16 * BYTES_PER_ROW;
+                uint32_t offset = (this->write_offset_ ^ (ni * 32)) + mi * WARPS_M * 16 * BYTES_PER_ROW;
                 fmha::sts(this->smem_ + offset + 0 * BYTES_PER_ROW, regs[mi][ni].x);
                 fmha::sts(this->smem_ + offset + 8 * BYTES_PER_ROW, regs[mi][ni].z);
                 offset ^= 4 * Base::BYTES_PER_STS;
@@ -1280,7 +1361,250 @@ struct Smem_tile_mma_epilogue : public Base {
         }
     }
 
+    // uint32_t read_offset_;
+    uint32_t smem_read_;
+};
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+template<typename Cta_tile>
+struct Smem_tile_transpose {
+
+    using Mma_tile = fmha::Hmma_tile<Cta_tile>;
+    using Fragment_write = fmha::Fragment_b<fmha::Col>;
+    using Fragment_read = fmha::Fragment_b<fmha::Col>;
+
+    enum { COLS = Cta_tile::N };
+    enum { BYTES_PER_ELT = 2 };
+    enum { BYTES_PER_STS = 4 };
+    enum { BYTES_PER_ROW = COLS * BYTES_PER_ELT };  // TODO
+    enum { BYTES_PER_TILE = Cta_tile::M * BYTES_PER_ROW };
+
+    enum { BYTES_PER_LDS = 16 };
+
+    enum { WARPS_M = Cta_tile::WARPS_M };
+    enum { WARPS_N = Cta_tile::WARPS_N };
+    enum { WARPS_K = Cta_tile::WARPS_K };
+
+    static_assert(WARPS_K == 1);
+    static_assert(WARPS_M == 1 && (WARPS_N == 4 || WARPS_N == 8));
+
+    inline __device__ Smem_tile_transpose(char *smem, int tidx) {
+        smem_ = __nvvm_get_smem_pointer(smem);
+        // uint32_t smem_ = __nvvm_get_smem_pointer(smem);
+
+        int write_col, write_row;
+        static_assert(WARPS_M == 1 && (WARPS_N == 4 || WARPS_N == 8) || (WARPS_M == 4 || WARPS_N == 8) || WARPS_N == 1);
+        if( WARPS_M == 1 && (WARPS_N == 4 || WARPS_N == 8) ) {
+            write_row = (tidx & 0x1c) / 4;
+            write_col = (tidx & 0xe0) / 4 + (tidx & 0x03);
+        } else {
+            write_row = (tidx & 0xe0) / 2 + (tidx & 0x1c) / 4;
+            write_col = (tidx & 0x03);
+        }
+        write_col ^= (write_row & 0x07) * 4;
+
+        write_offset_ = write_row * BYTES_PER_ROW + write_col * BYTES_PER_STS;
+        // smem_write_ = smem_ + write_row * BYTES_PER_ROW + write_col * BYTES_PER_STS;
+
+        int read_row, read_col;
+        read_row = (tidx & 0x0f);
+        read_col = (tidx & 0xe0) / 16 + (tidx & 0x1c) / 16;
+
+        read_col ^= (read_row & 0x07);
+        read_offset_ = read_row * BYTES_PER_ROW + read_col * BYTES_PER_LDS;
+        // smem_read_ = smem_ + read_row * BYTES_PER_ROW + read_col * BYTES_PER_LDS;
+    }
+
+    template<int M, int N>
+    inline __device__ void store(const Fragment_write (&frag_w)[M][N], int mi) {
+        #pragma unroll
+        for( int ni = 0; ni < N; ni++ ) {
+            // size_t offset = write_offset_ + ni * WARPS_N * 16 * BYTES_PER_ELT;
+            uint32_t offset = write_offset_ + ni * WARPS_N * 16 * BYTES_PER_ELT;
+            fmha::sts(smem_ + offset + 0 * BYTES_PER_ROW, frag_w[ni][mi].reg(0));
+            fmha::sts(smem_ + offset + 8 * BYTES_PER_ROW, frag_w[ni][mi].reg(2));
+            offset ^= 4 * BYTES_PER_STS;
+            fmha::sts(smem_ + offset + 0 * BYTES_PER_ROW, frag_w[ni][mi].reg(1));
+            fmha::sts(smem_ + offset + 8 * BYTES_PER_ROW, frag_w[ni][mi].reg(3));
+        }
+    }
+
+    template<int N>
+    inline __device__ void load(Fragment_read (&frag_r)[N]) {
+        #pragma unroll
+        for( int ni = 0; ni < N; ni++ ) {
+            // size_t offset = read_offset_ + ni * WARPS_N * 16 * BYTES_PER_ELT;
+            uint32_t offset = read_offset_ + ni * WARPS_N * 16 * BYTES_PER_ELT;
+            uint4 dst;
+            fmha::ldsmt(dst, this->smem_ + offset);
+            frag_r[ni].reg(0) = dst.x;
+            frag_r[ni].reg(1) = dst.y;  // Fragment B regs col major!
+            frag_r[ni].reg(2) = dst.z;
+            frag_r[ni].reg(3) = dst.w;
+        }
+    }
+
+    template<int M, int N>
+    inline __device__ void transpose(const Fragment_write (&frag_w)[M][N], Fragment_read (&frag_r)[M], int mi) {
+        static_assert(COLS == Cta_tile::N);
+        #pragma unroll
+        for( int ni = 0; ni < N; ni++ ) {
+            // size_t offset = write_offset_ + ni * WARPS_N * 16 * BYTES_PER_ELT;
+            uint32_t offset = write_offset_ + ni * WARPS_N * 16 * BYTES_PER_ELT;
+            fmha::sts(smem_ + offset + 0 * BYTES_PER_ROW, frag_w[ni][mi].reg(0));
+            fmha::sts(smem_ + offset + 8 * BYTES_PER_ROW, frag_w[ni][mi].reg(2));
+            offset ^= 4 * BYTES_PER_STS;
+            fmha::sts(smem_ + offset + 0 * BYTES_PER_ROW, frag_w[ni][mi].reg(1));
+            fmha::sts(smem_ + offset + 8 * BYTES_PER_ROW, frag_w[ni][mi].reg(3));
+        }
+        #pragma unroll
+        for( int ni = 0; ni < N; ni++ ) {
+            // size_t offset = read_offset_ + ni * WARPS_N * 16 * BYTES_PER_ELT;
+            // size_t offset = read_offset_ + ni * WARPS_N * 16 * BYTES_PER_ELT;
+            uint32_t offset = read_offset_ + ni * WARPS_N * 16 * BYTES_PER_ELT;
+            uint4 dst;
+            fmha::ldsmt(dst, this->smem_ + offset);
+            frag_r[ni].reg(0) = dst.x;
+            frag_r[ni].reg(1) = dst.y;  // Fragment B regs col major!
+            frag_r[ni].reg(2) = dst.z;
+            frag_r[ni].reg(3) = dst.w;
+        }
+    }
+
+    uint32_t smem_;
+    uint32_t write_offset_;
     uint32_t read_offset_;
+    // uint32_t smem_write_;
+    // uint32_t smem_read_;
+};
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+template<
+    typename Gmem_tile,
+    // The number of buffers. (Used in multistage and double buffer cases.)
+    int BUFFERS_PER_TILE_ = 1
+>
+struct Smem_tile_dp_sum {
+
+    using Cta_tile = typename Gmem_tile::Cta_tile;
+    using Mma_tile = fmha::Hmma_tile<Cta_tile>;
+
+    // The size of each element.
+    static constexpr int BYTES_PER_ELEMENT = 4;
+    static constexpr int ROWS = Gmem_tile::ROWS;
+    static constexpr int THREADS_PER_ROW = Gmem_tile::THREADS_PER_ROW;
+    static constexpr int MMAS_M = Mma_tile::MMAS_M;
+
+    static constexpr int ROWS_PER_LDG = Gmem_tile::ROWS_PER_LDG;
+    static constexpr int LDGS = Gmem_tile::LDGS;
+
+    static constexpr int ROWS_PER_MMA = Mma_tile::M_PER_MMA;
+
+    // The size of one buffer in bytes in shared memory.
+    static constexpr int BYTES_PER_BUFFER = ROWS * BYTES_PER_ELEMENT;
+    // The number of buffers.
+    static constexpr int BUFFERS_PER_TILE = BUFFERS_PER_TILE_;
+    // The size in bytes of total buffers.
+    static constexpr int BYTES_PER_TILE = BYTES_PER_BUFFER * BUFFERS_PER_TILE;
+    // The boundary for smem_read_offset and smem_write_offset increment.
+    static constexpr int ROWS_PER_TILE_INC_BOUNDARY = ROWS * BUFFERS_PER_TILE - ROWS;
+
+    inline __device__ Smem_tile_dp_sum(float *smem, const int tidx)
+        : smem_(smem), smem_read_buffer_(smem), smem_write_buffer_(smem), tidx_(tidx) {
+    }
+
+    // Move the read offset to next buffer.
+    inline __device__ void move_to_next_read_buffer() {
+        if( BUFFERS_PER_TILE > 1 && (smem_read_buffer_ - smem_) >= ROWS_PER_TILE_INC_BOUNDARY ) {
+            this->smem_read_buffer_ -= ROWS_PER_TILE_INC_BOUNDARY;
+        } else if( BUFFERS_PER_TILE > 1 ) {
+            this->smem_read_buffer_ += ROWS;
+        }
+    }
+
+    // Move the write offset to next buffer.
+    inline __device__ void move_to_next_write_buffer() {
+        if( BUFFERS_PER_TILE > 1 && (smem_write_buffer_ - smem_) >= ROWS_PER_TILE_INC_BOUNDARY ) {
+            this->smem_write_buffer_ -= ROWS_PER_TILE_INC_BOUNDARY;
+        } else if( BUFFERS_PER_TILE > 1 ) {
+            this->smem_write_buffer_ += ROWS;
+        }
+    }
+
+    inline __device__ void store(const float (&sum)[LDGS]) {
+        if (tidx_ % THREADS_PER_ROW == 0) {
+            int row = tidx_ / THREADS_PER_ROW;
+            #pragma unroll
+            for (int i = 0; i < LDGS; ++i) {
+                if (row + i * ROWS_PER_LDG < ROWS) {
+                    smem_write_buffer_[row + i * ROWS_PER_LDG] = sum[i];
+                }
+            }
+        }
+    }
+
+    inline __device__ void store(const float sum, const int buffer_idx) {
+        float *smem_write = smem_ + buffer_idx * ROWS;
+        int row = tidx_ / THREADS_PER_ROW;
+        if ((row < ROWS) && (tidx_ % THREADS_PER_ROW == 0)) {
+            smem_write[row] = sum;
+        }
+    }
+
+    inline __device__ void store(const float (&sum)[LDGS], const int buffer_idx) {
+        float *smem_write = smem_ + buffer_idx * ROWS;
+        if (tidx_ % THREADS_PER_ROW == 0) {
+            int row = tidx_ / THREADS_PER_ROW;
+            #pragma unroll
+            for (int i = 0; i < LDGS; ++i) {
+                if (row + i * ROWS_PER_LDG < ROWS) {
+                    smem_write[row + i * ROWS_PER_LDG] = sum[i];
+                }
+            }
+        }
+    }
+
+    inline __device__ void store_pair(const float (&sum)[MMAS_M * 2], const int buffer_idx) {
+        float *smem_write = smem_ + buffer_idx * ROWS;
+        // Extract the position in the warp.
+        int warp = tidx_ / Cta_tile::THREADS_PER_WARP;
+        int lane = tidx_ % Cta_tile::THREADS_PER_WARP;
+        int row = lane / 4;
+        #pragma unroll
+        for (int mi = 0; mi < MMAS_M; ++mi) {
+            smem_write[mi * ROWS_PER_MMA + row + 0] = sum[mi * 2 + 0];
+            smem_write[mi * ROWS_PER_MMA + row + 8] = sum[mi * 2 + 1];
+        }
+    }
+
+    template<int N>
+    inline __device__ void load(float (&sum)[N], const int (&row)[N]) {
+        #pragma unroll
+        for( int ni = 0; ni < N; ni++ ) {
+            sum[ni] = smem_read_buffer_[row[ni]];
+        }
+    }
+
+    template<int N>
+    inline __device__ void load(float (&sum)[N], const int (&row)[N], const int buffer_idx) {
+        float *smem_read = smem_ + buffer_idx * ROWS;
+        #pragma unroll
+        for( int ni = 0; ni < N; ni++ ) {
+            sum[ni] = smem_read[row[ni]];
+        }
+    }
+
+    static inline __device__ float reduce_warp(float sum) {
+        fmha::SumOp<float> sum_op;
+        return fmha::Allreduce<THREADS_PER_ROW>::run(sum, sum_op);
+    }
+
+    const int tidx_;
+    float * const smem_;
+    float *smem_read_buffer_;
+    float *smem_write_buffer_;
 };
 
 }  // namespace fmha

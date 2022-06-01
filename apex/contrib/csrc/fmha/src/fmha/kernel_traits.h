@@ -38,15 +38,18 @@ struct FMHA_kernel_traits {
     using Cta_tile_o = fmha::Cta_tile_extd<STEP, D, S, WARPS_M, 1, WARPS_N>;
 
     // Do we use one buffer for K and V.
-    enum { SHARE_SMEM_FOR_K_AND_V = (FLAGS & 0x08u) != 0u };
+    static constexpr bool SHARE_SMEM_FOR_K_AND_V = (FLAGS & 0x08u) != 0u;
     // Do we keep K in registers.
-    enum { K_IN_REGS = (FLAGS & 0x10u) == 0u };
+    static constexpr bool K_IN_REGS = (FLAGS & 0x10u) == 0u;
+    // Do we keep V in registers.
+    static constexpr bool V_IN_REGS = (FLAGS & 0x100u) == 0u;
 
     // The global memory tile to load Q.
     using Gmem_tile_q = fmha::Gmem_tile_qkv<Cta_tile_p, fmha::BITS_PER_ELEMENT_A, STEP, D>;
 
     // The shared memory tile to swizzle Q.
-    using Smem_tile_q = fmha::Smem_tile_a<Cta_tile_p, fmha::Row, Gmem_tile_q::BYTES_PER_LDG, 1>;
+    // using Smem_tile_q = fmha::Smem_tile_a<Cta_tile_p, fmha::Row, Gmem_tile_q::BYTES_PER_LDG, 1>;
+    using Smem_tile_q = fmha::Smem_tile_a<Cta_tile_p, fmha::Row, Gmem_tile_q::BYTES_PER_LDG, 2>;
 
     // The global memory tile to load K.
     using Gmem_tile_k = fmha::Gmem_tile_qkv<Cta_tile_p, fmha::BITS_PER_ELEMENT_B, S, D>;
@@ -61,7 +64,7 @@ struct FMHA_kernel_traits {
     // The global memory tile to store O.
     using Gmem_tile_o = fmha::Gmem_tile_o<Cta_tile_o>;
     // The shared memory tile for O.
-    using Smem_tile_o = fmha::Smem_tile_o<Cta_tile_o>;
+    using Smem_tile_o = fmha::Smem_tile_o<Cta_tile_o>;;
 
     // The global memory tile to load/store S.
     using Gmem_tile_s = fmha::Gmem_tile_mma_s<Cta_tile_p>;
@@ -71,25 +74,33 @@ struct FMHA_kernel_traits {
 
     using Gmem_tile_do = fmha::Gmem_tile_dout<Cta_tile_p>;
 
+    using Gmem_tile_dot = fmha::Gmem_tile_dout<Cta_tile_p, fmha::Gmem_tile_qkv<Cta_tile_p, fmha::BITS_PER_ELEMENT_B, S, D> >;
+
+    // The global memory tile to store the softmax sum.
+    using Gmem_softmax_sum = fmha::Gmem_summary_stats<Cta_tile_p>;
+
+    // The shared memory tile to store dp sum.
+    using Smem_dp_sum = fmha::Smem_tile_dp_sum<Gmem_tile_q, 2>;
+
     // Make sure the number of threads match.
     static_assert((int)Gmem_tile_o::THREADS_PER_ROW == (int)Smem_tile_o::THREADS_PER_ROW, "");
 
     // The number of threads.
-    enum { THREADS = Cta_tile_p::THREADS_PER_CTA };
+    static constexpr int THREADS = Cta_tile_p::THREADS_PER_CTA;
     // Make sure the number of threads matches both CTAs.
-    static_assert((int)THREADS == (int)Cta_tile_o::THREADS_PER_CTA, "");
+    static_assert(THREADS == Cta_tile_o::THREADS_PER_CTA, "");
 
     // The amount of shared memory needed to load Q and K.
-    enum { BYTES_PER_SMEM_QK = Smem_tile_q::BYTES_PER_TILE + Smem_tile_k::BYTES_PER_TILE };
+    static constexpr int BYTES_PER_SMEM_QK = Smem_tile_q::BYTES_PER_TILE + Smem_tile_k::BYTES_PER_TILE;
     // The extra amount of shared memory needed to load V.
-    enum { BYTES_PER_SMEM_V = SHARE_SMEM_FOR_K_AND_V ? 0u : Smem_tile_v::BYTES_PER_TILE };
+    static constexpr int BYTES_PER_SMEM_V = SHARE_SMEM_FOR_K_AND_V ? 0u : Smem_tile_v::BYTES_PER_TILE;
     // The amount of shared memory needed for Q, K and V..
-    enum { BYTES_PER_SMEM_QKV = BYTES_PER_SMEM_QK + BYTES_PER_SMEM_V };
+    static constexpr int BYTES_PER_SMEM_QKV = BYTES_PER_SMEM_QK + BYTES_PER_SMEM_V;
     // The amount of shared memory needed to load Q and store O.
-    enum { BYTES_PER_SMEM_QO = Smem_tile_q::BYTES_PER_TILE + Smem_tile_o::BYTES_PER_TILE };
+    static constexpr int BYTES_PER_SMEM_QO = Smem_tile_q::BYTES_PER_TILE + Smem_tile_o::BYTES_PER_TILE;
 
     // The amount of shared memory needed for Q, K, V and O.
-    enum { BYTES_PER_SMEM = fmha::Max<BYTES_PER_SMEM_QKV, BYTES_PER_SMEM_QO>::VALUE };
+    static constexpr int BYTES_PER_SMEM = fmha::MaxConstexpr(BYTES_PER_SMEM_QKV, BYTES_PER_SMEM_QO);
     // Make sure we have enough shared memory.
     static_assert(Smem_tile_q::BYTES_PER_TILE + Smem_tile_o::BYTES_PER_TILE <= BYTES_PER_SMEM, "");
 };

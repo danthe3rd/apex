@@ -29,8 +29,6 @@
 
 #include <fmha/utils.h>
 
-#define FMHA_DIV_UP(m, n) (((m) + (n)-1) / (n))
-
 namespace fmha {
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -43,21 +41,21 @@ struct Fragment_base_ {
     // default input type
     using Input_type_ = Data_type_;
     // Does it store the array of elements.
-    enum { HAS_ELTS = BITS_PER_ELT_ >= 8 };
+    static constexpr bool HAS_ELTS = BITS_PER_ELT_ >= 8;
     // The number of elements.
-    enum { NUM_ELTS = NUM_ELTS_ };
+    static constexpr int NUM_ELTS = NUM_ELTS_;
     // The size of element in bits.
-    enum { BITS_PER_ELT = BITS_PER_ELT_ };
+    static constexpr int BITS_PER_ELT = BITS_PER_ELT_;
     // The size of byte of a single register.
-    enum { BYTES_PER_REG = 4 };
+    static constexpr int BYTES_PER_REG = 4;
     // The size in bits.
-    enum { BITS_PER_REG = BYTES_PER_REG * 8 };
+    static constexpr int BITS_PER_REG = BYTES_PER_REG * 8;
     // The number of registers needed to store the fragment.
-    enum { NUM_REGS = Div_up<NUM_ELTS * BITS_PER_ELT, BITS_PER_REG>::VALUE };
+    static constexpr int NUM_REGS = DivUpConstexpr(NUM_ELTS * BITS_PER_ELT, BITS_PER_REG);
     // The size in bytes (as returned by sizeof(Fragment_base<>).
-    enum { SIZE_IN_BYTES = NUM_REGS * BYTES_PER_REG };
+    static constexpr int SIZE_IN_BYTES = NUM_REGS * BYTES_PER_REG;
     // The alignment.
-    enum { ALIGNMENT = ALIGNMENT_ > 0 ? ALIGNMENT_ : Min<NUM_REGS * BYTES_PER_REG, 16>::VALUE };
+    static constexpr int ALIGNMENT = ALIGNMENT_ > 0 ? ALIGNMENT_ : MinConstexpr(NUM_REGS * BYTES_PER_REG, 16);
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -75,7 +73,7 @@ template<
 struct alignas(static_cast<int>(Base_::ALIGNMENT)) Fragment : public Base_ {
 
     // The size of a load/store.
-    enum { BYTES_PER_LOAD_STORE = Base_::NUM_REGS * sizeof(uint32_t) };
+    static constexpr int BYTES_PER_LOAD_STORE = Base_::NUM_REGS * sizeof(uint32_t);
 
     // Clear the fragment. Using PTX in that code seems to produce better SASS...
     inline __device__ void clear() {
@@ -121,9 +119,26 @@ struct alignas(static_cast<int>(Base_::ALIGNMENT)) Fragment : public Base_ {
 
     // Add another fragment.
     inline __device__ void add(const Fragment &other) {
+        // TODO (TD 2022-04-09): Shouldn't this be NUM_REGS instead of NUM_ELTS?
+        // Also are we doing int addition or __half2 addition?
         #pragma unroll
         for( int ii = 0; ii < NUM_ELTS_; ++ii ) {
             this->elt(ii) += other.elt(ii);
+        }
+    }
+
+    // Multiply by another fragment.
+    inline __device__ void hmul(const Fragment &other) {
+        #pragma unroll
+        for( int ii = 0; ii < Base_::NUM_REGS; ++ii ) {
+            this->reg(ii) = fmha::hmul2(this->reg(ii), other.reg(ii));
+        }
+    }
+
+    inline __device__ void hrelu_() {
+        #pragma unroll
+        for( int ii = 0; ii < Base_::NUM_REGS; ++ii ) {
+            this->reg(ii) = fmha::hrelu2(this->reg(ii));
         }
     }
 };
@@ -152,6 +167,12 @@ struct Fragment_accumulator : public Fragment<float, 8> {
     inline __device__ void add(const Other_fragment_ &other) {
         for( int ii = 0; ii < Base::NUM_ELTS; ++ii ) {
             this->elt(ii) = this->elt(ii) + other.elt(ii);
+        }
+    }
+
+    inline __device__ void mul_(const float other) {
+        for( int ii = 0; ii < Base::NUM_ELTS; ++ii ) {
+            this->elt(ii) *= other;
         }
     }
 
@@ -241,15 +262,15 @@ template<
     int WARPS_K_>
 struct Cta_tile_ {
 
-    enum { M = M_, N = N_, K = K_ };
+    static constexpr int M = M_, N = N_, K = K_;
     // The number of warps.
-    enum { WARPS_M = WARPS_M_, WARPS_N = WARPS_N_, WARPS_K = WARPS_K_ };
+    static constexpr int WARPS_M = WARPS_M_, WARPS_N = WARPS_N_, WARPS_K = WARPS_K_;
     // The number of warps per CTA.
-    enum { WARPS_PER_CTA = WARPS_M * WARPS_N * WARPS_K };
+    static constexpr int WARPS_PER_CTA = WARPS_M * WARPS_N * WARPS_K;
     // The number of threads per warp.
-    enum { THREADS_PER_WARP = 32 };
+    static constexpr int THREADS_PER_WARP = 32;
     // The number of threads per CTA.
-    enum { THREADS_PER_CTA = WARPS_PER_CTA * THREADS_PER_WARP };
+    static constexpr int THREADS_PER_CTA = WARPS_PER_CTA * THREADS_PER_WARP;
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -257,28 +278,22 @@ struct Cta_tile_ {
 template<typename Cta_tile>
 struct Hmma_tile {
     // The number of elements computed with a single warp-MMA.
-    enum { M_PER_MMA = 16, N_PER_MMA = 16, K_PER_MMA = 16 };
+    static constexpr int M_PER_MMA = 16, N_PER_MMA = 16, K_PER_MMA = 16;
 
     // The number of elements computed with a single CTA-MMA.
-    enum {
-        M_PER_MMA_PER_CTA = M_PER_MMA * Cta_tile::WARPS_M,
+    static constexpr int M_PER_MMA_PER_CTA = M_PER_MMA * Cta_tile::WARPS_M,
         N_PER_MMA_PER_CTA = N_PER_MMA * Cta_tile::WARPS_N,
-        K_PER_MMA_PER_CTA = K_PER_MMA * Cta_tile::WARPS_K
-    };
+        K_PER_MMA_PER_CTA = K_PER_MMA * Cta_tile::WARPS_K;
 
     // The number of MMAs needed to compute the GEMM.
-    enum {
-        MMAS_M = Div_up<Cta_tile::M, M_PER_MMA_PER_CTA>::VALUE,
-        MMAS_N = Div_up<Cta_tile::N, N_PER_MMA_PER_CTA>::VALUE,
-        MMAS_K = Div_up<Cta_tile::K, K_PER_MMA_PER_CTA>::VALUE,
-    };
+    static constexpr int MMAS_M = DivUpConstexpr(Cta_tile::M, M_PER_MMA_PER_CTA),
+        MMAS_N = DivUpConstexpr(Cta_tile::N, N_PER_MMA_PER_CTA),
+        MMAS_K = DivUpConstexpr(Cta_tile::K, K_PER_MMA_PER_CTA);
 
-    // The number of elements computed per warp.
-    enum {
-        M_PER_WARP = MMAS_M * M_PER_MMA,
-        N_PER_WARP = MMAS_N * N_PER_MMA,
-        K_PER_WARP = MMAS_K * K_PER_MMA,
-    };
+    // // The number of elements computed per warp.
+    // static constexpr int M_PER_WARP = MMAS_M * M_PER_MMA,
+    //     N_PER_WARP = MMAS_N * N_PER_MMA,
+    //     K_PER_WARP = MMAS_K * K_PER_MMA;
 
 };
 
